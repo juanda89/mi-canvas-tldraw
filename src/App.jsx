@@ -1,33 +1,42 @@
-import { Tldraw, useEditor } from '@tldraw/tldraw'
-import '@tldraw/tldraw/tldraw.css'
-import { useEffect } from 'react'
+import { useState, useEffect } from 'react'
+import { supabase } from './supabaseClient'
+import { Auth } from '@supabase/auth-ui-react'
+import { ThemeSupa } from '@supabase/auth-ui-shared'
+import Canvas from './Canvas' // This component doesn't exist yet, I'll create it next.
 
-// Un componente que se ejecuta una vez para configurar el estado inicial
-function SetInitialState() {
-  const editor = useEditor()
+function App() {
+  const [session, setSession] = useState(null)
 
   useEffect(() => {
-    if (!editor) return
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+    })
 
-    // 1. Forzar el modo oscuro
-    editor.user.updateUserPreferences({ colorScheme: 'dark' })
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+    })
 
-    // 2. Activar la grilla
-    editor.updateInstanceState({ isGridMode: true })
+    return () => subscription.unsubscribe()
+  }, [])
 
-  }, [editor])
-
-  return null
-}
-
-// El componente principal de la aplicación
-export default function App() {
   return (
-    <div style={{ position: 'fixed', inset: 0 }}>
-      <Tldraw>
-        {/* Este componente se encargará de la configuración inicial */}
-        <SetInitialState />
-      </Tldraw>
+    <div style={{ width: '100vw', height: '100vh' }}>
+      {!session ? (
+        <div style={{ width: '100vw', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <Auth
+            supabaseClient={supabase}
+            appearance={{ theme: ThemeSupa }}
+            theme="dark"
+            providers={['google']}
+          />
+        </div>
+      ) : (
+        <Canvas session={session} />
+      )}
     </div>
   )
 }
+
+export default App

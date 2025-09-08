@@ -47,7 +47,10 @@ export default function Canvas({ session }) {
     
     const { error } = await supabase
       .from('canvas_states')
-      .upsert({ user_id: userId, data: snapshot, updated_at: new Date().toISOString() });
+      .upsert(
+        { user_id: userId, data: snapshot, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      );
 
     if (error) {
       console.error('Error saving canvas state:', error);
@@ -71,11 +74,11 @@ export default function Canvas({ session }) {
     if (data && data.data) {
         // NOTE: The data is already a JS object, no need to parse it.
         editor.store.loadSnapshot(data.data);
+    } else {
+        // Only apply these settings if no snapshot was loaded
+        editor.user.updateUserPreferences({ colorScheme: 'dark' });
+        editor.updateInstanceState({ isGridMode: true });
     }
-
-    // Always apply these settings after attempting to load the snapshot
-    editor.user.updateUserPreferences({ colorScheme: 'dark' });
-    editor.updateInstanceState({ isGridMode: true });
   };
 
   const handleEditorMount = (editor) => {

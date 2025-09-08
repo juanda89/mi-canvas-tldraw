@@ -1,19 +1,33 @@
-// 1. Importar la librería de tldraw y sus estilos CSS
-import { Tldraw } from '@tldraw/tldraw'
+import { Tldraw, useEditor } from '@tldraw/tldraw'
 import '@tldraw/tldraw/tldraw.css'
+import { useEffect } from 'react'
 
-// 2. Este es el componente principal de tu aplicación
+// Un componente que se ejecuta una vez para configurar el estado inicial
+function SetInitialState() {
+  const editor = useEditor()
+
+  useEffect(() => {
+    if (!editor) return
+
+    // 1. Forzar el modo oscuro
+    editor.user.updateUserPreferences({ colorScheme: 'dark' })
+
+    // 2. Activar la grilla
+    editor.updateInstanceState({ isGridMode: true })
+
+  }, [editor])
+
+  return null
+}
+
+// El componente principal de la aplicación
 export default function App() {
   return (
-    // 3. Un contenedor para que el canvas ocupe el 100% de la pantalla
     <div style={{ position: 'fixed', inset: 0 }}>
-      {/* 4. El componente de tldraw con nuestras personalizaciones */}
-      <Tldraw
-        // Forzamos el modo oscuro
-        forceDarkMode={true}
-        // Activamos la grilla por defecto
-        gridMode={true}
-      />
+      <Tldraw>
+        {/* Este componente se encargará de la configuración inicial */}
+        <SetInitialState />
+      </Tldraw>
     </div>
   )
 }

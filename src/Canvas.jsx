@@ -72,6 +72,10 @@ export default function Canvas({ session }) {
         // NOTE: The data is already a JS object, no need to parse it.
         editor.store.loadSnapshot(data.data);
     }
+
+    // Always apply these settings after attempting to load the snapshot
+    editor.user.updateUserPreferences({ colorScheme: 'dark' });
+    editor.updateInstanceState({ isGridMode: true });
   };
 
   const handleEditorMount = (editor) => {
@@ -90,8 +94,6 @@ export default function Canvas({ session }) {
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
       <Tldraw
-        forceDarkMode={true}
-        gridMode={true}
         onMount={handleEditorMount}
         overrides={uiOverrides}
       />

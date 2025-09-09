@@ -160,7 +160,7 @@ export default function Canvas({ session }) {
         clearTimeout(saveTimeout.current);
       }
     };
-  }, [isReady, store, session.user.id, addDebugInfo]); // ✅ Sol depende de isReady
+  }, [isReady, store, session.user.id, addDebugInfo]); // ✅ Solo depende de isReady
 
   // Función de carga simplificada
   const loadUserData = useCallback(async () => {
@@ -252,6 +252,32 @@ export default function Canvas({ session }) {
         left: '10px',
         zIndex: 1002
       }}>
+        <button 
+          onClick={() => {
+            // Test: crear un store "normal" y ver qué diferencias hay
+            const normalStore = createTLStore();
+            const normalSnapshot = normalStore.getSnapshot();
+            
+            addDebugInfo('🔍 Store NORMAL vs ACTUAL', {
+              normal: {
+                totalRecords: Object.keys(normalSnapshot.store).length,
+                recordTypes: [...new Set(Object.values(normalSnapshot.store).map(v => v.typeName))],
+                hasCameraRecords: Object.keys(normalSnapshot.store).some(k => k.startsWith('camera:')),
+                hasInstanceRecords: Object.keys(normalSnapshot.store).some(k => k.startsWith('instance:'))
+              },
+              actual: {
+                totalRecords: Object.keys(store.getSnapshot().store).length,
+                recordTypes: [...new Set(Object.values(store.getSnapshot().store).map(v => v.typeName))],
+                hasCameraRecords: Object.keys(store.getSnapshot().store).some(k => k.startsWith('camera:')),
+                hasInstanceRecords: Object.keys(store.getSnapshot().store).some(k => k.startsWith('instance:'))
+              }
+            });
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+        >
+          🔍 Compare
+        </button>
+
         <button 
           onClick={() => {
             if (editorRef.current) {

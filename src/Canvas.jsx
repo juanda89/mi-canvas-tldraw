@@ -88,17 +88,32 @@ export default function Canvas({ session }) {
           const shapesCount = Object.keys(snapshot.store).filter(k => k.startsWith('shape:')).length;
           addDebugInfo('📊 Guardando...', { shapesCount });
 
-          // UPDATE o INSERT
-          const { error: updateError } = await supabase
+          // ✅ UPDATE con verificación de filas afectadas
+          const { data: updateData, error: updateError } = await supabase
             .from('canvas_states')
             .update({ 
               data: snapshot, 
               updated_at: new Date().toISOString() 
             })
-            .eq('user_id', session.user.id);
+            .eq('user_id', session.user.id)
+            .select(); // ✅ IMPORTANTE: .select() para obtener datos actualizados
 
           if (updateError) {
-            const { data, error: insertError } = await supabase
+            addDebugInfo('❌ Error en UPDATE', updateError);
+            return;
+          }
+
+          // ✅ Verificar si UPDATE realmente actualizó algo
+          if (updateData && updateData.length > 0) {
+            addDebugInfo('✅ Guardado (UPDATE exitoso)', { 
+              shapesCount, 
+              recordId: updateData[0].id 
+            });
+          } else {
+            // ✅ Si UPDATE no afectó filas, hacer INSERT
+            addDebugInfo('ℹ️ UPDATE no afectó filas, insertando nuevo registro...');
+            
+            const { data: insertData, error: insertError } = await supabase
               .from('canvas_states')
               .insert({ 
                 user_id: session.user.id, 
@@ -108,12 +123,13 @@ export default function Canvas({ session }) {
               .select();
 
             if (insertError) {
-              addDebugInfo('❌ Error guardando', insertError);
+              addDebugInfo('❌ Error en INSERT', insertError);
             } else {
-              addDebugInfo('✅ Guardado (INSERT)', { recordId: data[0]?.id, shapesCount });
+              addDebugInfo('✅ Guardado (INSERT nuevo usuario)', { 
+                recordId: insertData[0]?.id, 
+                shapesCount 
+              });
             }
-          } else {
-            addDebugInfo('✅ Guardado (UPDATE)', { shapesCount });
           }
 
         } catch (error) {

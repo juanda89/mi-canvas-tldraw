@@ -27,8 +27,10 @@ export default function Canvas({ session }) {
   const [loading, setLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState([]);
   const [isReady, setIsReady] = useState(false);
+  const [pasteEvents, setPasteEvents] = useState([]); // ✅ NUEVO: Tracking de paste events
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
+  const lastSaveTime = useRef(0); // ✅ NUEVO: Rate limiting
   
   // Store limpio - NO cargar snapshots completos que corrompan el sistema
   const [store] = useState(() => {
@@ -56,10 +58,25 @@ export default function Canvas({ session }) {
     setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
   }, []);
 
+  // ✅ NUEVO: Función para trackear paste events
+  const addPasteEvent = useCallback((type, data, success = null) => {
+    const pasteEntry = {
+      id: Date.now(),
+      time: new Date().toLocaleTimeString(),
+      type,
+      data,
+      success,
+      timestamp: new Date().toISOString()
+    };
+    
+    setPasteEvents(prev => [...prev.slice(-15), pasteEntry]);
+    addDebugInfo(`📋 Paste Event: ${type}`, data);
+  }, [addDebugInfo]);
+
   // ✅ NUEVO: Función para enviar al webhook
   const sendToWebhook = useCallback(async (pasteData) => {
     try {
-      addDebugInfo('📤 Enviando al webhook...', pasteData);
+      addPasteEvent('📤 sending', pasteData);
       
       const response = await fetch('https://n8n-boominbm-u44048.vm.elestio.app/webhook/process-social-url', {
         method: 'POST',
@@ -75,21 +92,23 @@ export default function Canvas({ session }) {
 
       if (response.ok) {
         const result = await response.json();
-        addDebugInfo('✅ Webhook exitoso', result);
+        addPasteEvent('✅ webhook success', result, true);
+        return result;
       } else {
-        addDebugInfo('❌ Webhook error', { status: response.status });
+        addPasteEvent('❌ webhook error', { status: response.status }, false);
+        return null;
       }
     } catch (error) {
-      addDebugInfo('❌ Error enviando webhook', error);
+      addPasteEvent('❌ webhook failed', error.message, false);
+      return null;
     }
-  }, [session.user.id, addDebugInfo]);
+  }, [session.user.id, addPasteEvent]);
 
-  // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
+  // ✅ Extraer solo contenido del usuario (shapes y assets)
   const extractUserData = useCallback((snapshot) => {
     const userShapes = {};
     const userAssets = {};
     
-    // Solo extraer shapes (dibujos del usuario) y assets
     Object.entries(snapshot.store).forEach(([key, value]) => {
       if (key.startsWith('shape:') && value.typeName === 'shape') {
         userShapes[key] = value;
@@ -110,7 +129,7 @@ export default function Canvas({ session }) {
     };
   }, []);
 
-  // ✅ NUEVO: Cargar solo shapes sin tocar configuraciones del sistema
+  // ✅ Cargar solo shapes sin tocar configuraciones del sistema
   const loadUserShapes = useCallback((userData) => {
     if (!userData.shapes || !editorRef.current) return;
 
@@ -120,80 +139,97 @@ export default function Canvas({ session }) {
     });
 
     try {
-      // Crear assets primero
       const assetsToCreate = Object.values(userData.assets || {});
       if (assetsToCreate.length > 0) {
         editorRef.current.createAssets(assetsToCreate);
         addDebugInfo('✅ Assets cargados', { count: assetsToCreate.length });
       }
 
-      // Crear shapes
       const shapesToCreate = Object.values(userData.shapes);
       if (shapesToCreate.length > 0) {
         editorRef.current.createShapes(shapesToCreate);
         addDebugInfo('✅ Shapes cargados', { count: shapesToCreate.length });
       }
-
     } catch (error) {
       addDebugInfo('❌ Error cargando shapes', error);
     }
   }, [addDebugInfo]);
 
-  // ✅ Auto-save con persistencia selectiva
+  // ✅ OPTIMIZADO: Auto-save sin lag
   useEffect(() => {
-    if (!isReady) {
-      addDebugInfo('⏭️ AutoSave: No ready yet');
-      return;
-    }
+    if (!isReady) return;
 
-    addDebugInfo('🔄 Configurando auto-save selectivo...');
+    addDebugInfo('🔄 Auto-save OPTIMIZADO iniciado');
 
     let changeCount = 0;
-    const cleanup = store.listen(() => {
+    let significantChanges = 0;
+
+    const cleanup = store.listen((entry) => {
       changeCount++;
-      addDebugInfo(`🔄 Store cambio #${changeCount} - AutoSave selectivo activo`);
+      
+      // Solo contar cambios significativos
+      const hasShapeChanges = entry.changes.added.some(record => record.typeName === 'shape') || 
+                             entry.changes.updated.some(record => record.typeName === 'shape');
+
+      if (hasShapeChanges) {
+        significantChanges++;
+        
+        // Solo log cada 3 cambios significativos
+        if (significantChanges % 3 === 0) {
+          addDebugInfo(`💾 ${significantChanges} cambios → guardando en 4s`);
+        }
+      }
 
       if (saveTimeout.current) {
         clearTimeout(saveTimeout.current);
       }
 
+      // Solo continuar si hay cambios significativos
+      if (significantChanges === 0) return;
+
       saveTimeout.current = setTimeout(async () => {
+        const now = Date.now();
+        
+        // Rate limiting: 8 segundos mínimo entre saves
+        if (now - lastSaveTime.current < 8000) {
+          addDebugInfo('⏭️ Save bloqueado (rate limit 8s)');
+          return;
+        }
+
         try {
-          addDebugInfo('💾 Auto-guardando (solo contenido del usuario)...');
+          lastSaveTime.current = now;
           
           const snapshot = store.getSnapshot();
-          if (!snapshot?.store) {
-            addDebugInfo('❌ Snapshot inválido');
+          if (!snapshot?.store) return;
+
+          const userData = extractUserData(snapshot);
+          
+          if (userData.metadata.shapesCount === 0) {
+            addDebugInfo('⏭️ Sin shapes para guardar');
             return;
           }
 
-          // ✅ EXTRAER SOLO CONTENIDO DEL USUARIO (no configuraciones del sistema)
-          const userData = extractUserData(snapshot);
-          
-          addDebugInfo('📊 Datos selectivos extraídos', userData.metadata);
+          addDebugInfo('💾 Guardando...', { shapes: userData.metadata.shapesCount });
 
-          // Verificar si UPDATE o INSERT
           const { data: updateData, error: updateError } = await supabase
             .from('canvas_states')
             .update({ 
-              data: userData, // ✅ Solo shapes y assets, NO configuraciones del sistema
+              data: userData,
               updated_at: new Date().toISOString() 
             })
             .eq('user_id', session.user.id)
             .select();
 
           if (updateError) {
-            addDebugInfo('❌ Error en UPDATE', updateError);
+            addDebugInfo('❌ Update error', updateError);
             return;
           }
 
           if (updateData && updateData.length > 0) {
-            addDebugInfo('✅ UPDATE exitoso (selectivo)', { 
-              recordId: updateData[0].id,
-              shapesCount: userData.metadata.shapesCount
-            });
+            addDebugInfo('✅ Guardado OK', { shapes: userData.metadata.shapesCount });
+            changeCount = 0;
+            significantChanges = 0;
           } else {
-            // INSERT para usuario nuevo
             const { data: insertData, error: insertError } = await supabase
               .from('canvas_states')
               .insert({ 
@@ -203,112 +239,97 @@ export default function Canvas({ session }) {
               })
               .select();
 
-            if (insertError) {
-              addDebugInfo('❌ Error en INSERT', insertError);
-            } else {
-              addDebugInfo('✅ INSERT exitoso - Usuario nuevo (selectivo)', { 
-                recordId: insertData[0]?.id,
-                shapesCount: userData.metadata.shapesCount
-              });
+            if (!insertError) {
+              addDebugInfo('✅ Usuario nuevo creado');
+              changeCount = 0;
+              significantChanges = 0;
             }
           }
-
         } catch (error) {
-          addDebugInfo('❌ Error auto-save selectivo', error);
+          addDebugInfo('❌ Auto-save error', error);
         }
-      }, 1000);
+      }, 4000); // 4 segundos delay
 
     }, { source: 'user', scope: 'document' });
 
     return () => {
-      addDebugInfo('🧹 Auto-save selectivo cleanup');
+      addDebugInfo('🧹 Auto-save cleanup');
       cleanup();
-      if (saveTimeout.current) {
-        clearTimeout(saveTimeout.current);
-      }
+      if (saveTimeout.current) clearTimeout(saveTimeout.current);
     };
   }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
 
-  // ✅ OPTIMIZADO: Listener específico para paste events (con debouncing)
+  // ✅ NUEVO: Paste event listener
   useEffect(() => {
     if (!isReady || !editorRef.current) return;
 
-    addDebugInfo('📋 Configurando listener optimizado de paste...');
+    addDebugInfo('📋 Paste listener iniciado');
 
     let pasteTimeout = null;
-    const pendingPasteData = [];
 
     const cleanup = store.listen((entry) => {
-      // Solo procesar shapes agregadas que parezcan paste events
-      const potentialPasteShapes = entry.changes.added.filter(record => {
-        return record.typeName === 'shape' && (
-          record.type === 'bookmark' ||  // URLs pegadas
-          (record.type === 'text' && record.props?.text?.length > 10) || // Texto largo pegado
-          record.type === 'image' // Imágenes pegadas
-        );
+      const pasteShapes = entry.changes.added.filter(record => {
+        if (record.typeName !== 'shape') return false;
+        
+        // URLs
+        if (record.type === 'bookmark' && record.props?.url) return true;
+        
+        // Texto largo (probable paste)
+        if (record.type === 'text' && record.props?.text && record.props.text.length > 20) return true;
+        
+        // Imágenes
+        if (record.type === 'image') return true;
+        
+        return false;
       });
 
-      if (potentialPasteShapes.length > 0) {
-        // Agregar a pending y usar debouncing
-        potentialPasteShapes.forEach(record => {
-          const pasteInfo = {
-            type: 'shape',
-            shapeType: record.type,
-            id: record.id,
-            timestamp: new Date().toISOString()
-          };
+      if (pasteShapes.length > 0) {
+        addPasteEvent('🔍 paste detected', { count: pasteShapes.length });
 
-          // Detectar tipo específico
-          if (record.type === 'bookmark' && record.props?.url) {
-            pasteInfo.url = record.props.url;
-            pasteInfo.isURL = true;
-            addDebugInfo('🔗 URL pegada detectada', { url: record.props.url });
-          } else if (record.type === 'text' && record.props?.text) {
-            pasteInfo.text = record.props.text.substring(0, 100); // Limitar texto
-            pasteInfo.isText = true;
-            addDebugInfo('📝 Texto pegado detectado');
-          } else if (record.type === 'image') {
-            pasteInfo.isImage = true;
-            addDebugInfo('🖼️ Imagen pegada detectada');
-          }
-
-          pendingPasteData.push(pasteInfo);
-        });
-
-        // Debouncing: esperar 500ms antes de enviar
         if (pasteTimeout) clearTimeout(pasteTimeout);
         
-        pasteTimeout = setTimeout(() => {
-          if (pendingPasteData.length > 0) {
-            // Enviar batch de paste data
-            const batchData = {
-              type: 'paste_batch',
-              items: [...pendingPasteData],
-              count: pendingPasteData.length,
+        pasteTimeout = setTimeout(async () => {
+          for (const shape of pasteShapes) {
+            const pasteData = {
+              type: 'shape',
+              shapeType: shape.type,
+              id: shape.id,
               timestamp: new Date().toISOString()
             };
-            
-            addDebugInfo('📤 Enviando batch de paste data', { count: pendingPasteData.length });
-            sendToWebhook(batchData);
-            
-            // Limpiar pending
-            pendingPasteData.length = 0;
+
+            if (shape.type === 'bookmark' && shape.props?.url) {
+              pasteData.url = shape.props.url;
+              pasteData.isURL = true;
+              addPasteEvent('🔗 URL pasted', { url: shape.props.url });
+              await sendToWebhook(pasteData);
+              
+            } else if (shape.type === 'text' && shape.props?.text) {
+              pasteData.text = shape.props.text.substring(0, 50);
+              pasteData.isText = true;
+              addPasteEvent('📝 text pasted', { length: shape.props.text.length });
+              await sendToWebhook(pasteData);
+              
+            } else if (shape.type === 'image') {
+              pasteData.isImage = true;
+              addPasteEvent('🖼️ image pasted', { id: shape.id });
+              await sendToWebhook(pasteData);
+            }
           }
-        }, 500);
+        }, 500); // 500ms debounce
       }
     }, { source: 'user', scope: 'document' });
 
     return () => {
-      addDebugInfo('🧹 Paste listener optimizado cleanup');
+      addDebugInfo('🧹 Paste listener cleanup');
       cleanup();
       if (pasteTimeout) clearTimeout(pasteTimeout);
     };
-  }, [isReady, store]); // ✅ Dependencias reducidas
+  }, [isReady, store, addPasteEvent, sendToWebhook, addDebugInfo]);
 
-  // Función de carga - solo shapes y assets
+  // Función de carga
   const loadUserData = useCallback(async () => {
     try {
-      addDebugInfo('📥 Cargando datos selectivos desde Supabase...');
+      addDebugInfo('📥 Cargando desde Supabase...');
       
       const { data, error } = await supabase
         .from('canvas_states')
@@ -317,66 +338,61 @@ export default function Canvas({ session }) {
         .single();
 
       if (error?.code === 'PGRST116') {
-        addDebugInfo('ℹ️ Usuario nuevo - sin datos');
+        addDebugInfo('ℹ️ Usuario nuevo');
         return null;
       }
 
       if (error) {
-        addDebugInfo('❌ Error cargando', error);
+        addDebugInfo('❌ Error carga', error);
         return null;
       }
 
       if (data?.data) {
-        addDebugInfo('📊 Datos selectivos encontrados', {
+        addDebugInfo('📊 Datos encontrados', {
           shapes: Object.keys(data.data.shapes || {}).length,
-          assets: Object.keys(data.data.assets || {}).length,
-          metadata: data.data.metadata
+          assets: Object.keys(data.data.assets || {}).length
         });
         return data.data;
       }
 
       return null;
     } catch (error) {
-      addDebugInfo('❌ Error inesperado cargando', error);
+      addDebugInfo('❌ Error inesperado', error);
       return null;
     }
   }, [session.user.id, addDebugInfo]);
 
-  // ✅ onMount con carga selectiva - NO corrompe sistema
+  // onMount
   const handleMount = useCallback(async (editor) => {
     editorRef.current = editor;
-    addDebugInfo('🚀 Editor montado - iniciando carga selectiva');
+    addDebugInfo('🚀 Editor montado');
 
     try {
-      // ✅ PRIMERO: Cargar contenido del usuario (shapes/assets)
       const userData = await loadUserData();
       if (userData) {
-        loadUserShapes(userData); // ✅ Carga selectiva sin tocar sistema
-        addDebugInfo('✅ Contenido del usuario cargado selectivamente');
+        loadUserShapes(userData);
+        addDebugInfo('✅ Contenido cargado');
       }
 
-      // ✅ DESPUÉS: Configurar preferencias (sin sobrescribir)
       const prefs = editor.user.getUserPreferences();
       if (prefs.colorScheme === 'system') {
         editor.user.updateUserPreferences({ colorScheme: 'dark' });
-        addDebugInfo('🌙 Dark mode activado');
+        addDebugInfo('🌙 Dark mode');
       }
       
-      // ✅ Activar grid (el sistema está intacto)
       editor.updateInstanceState({ isGridMode: true });
-      addDebugInfo('📐 Grid activado - sistema funcional');
+      addDebugInfo('📐 Grid activado');
 
       setLoading(false);
-      addDebugInfo('✅ Carga completada - funcionalidades preservadas');
+      addDebugInfo('✅ Carga completada');
 
-      // Habilitar auto-save después de delay
       setTimeout(() => {
         setIsReady(true);
-        addDebugInfo('🟢 Auto-save selectivo HABILITADO');
+        addDebugInfo('🟢 Sistema LISTO');
       }, 2000);
 
     } catch (error) {
-      addDebugInfo('❌ Error en mount', error);
+      addDebugInfo('❌ Error mount', error);
       setLoading(false);
     }
   }, [loadUserData, loadUserShapes, addDebugInfo]);
@@ -390,20 +406,16 @@ export default function Canvas({ session }) {
         inferDarkMode
       />
       
-      {/* Botones de test mejorados */}
+      {/* Botones de control */}
       <div style={{
         position: 'absolute',
         top: '10px',
         left: '10px',
-        zIndex: 1002
+        zIndex: 1003
       }}>
         <button 
           onClick={() => {
-            addDebugInfo('🧪 Estado actual', {
-              loading,
-              isReady,
-              storeId: store.id
-            });
+            addDebugInfo('🧪 Estado', { loading, isReady, storeId: store.id });
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
         >
@@ -412,21 +424,13 @@ export default function Canvas({ session }) {
 
         <button 
           onClick={() => {
-            // ✅ Test de funcionalidades básicas que se estaban perdiendo
             if (editorRef.current) {
               const camera = editorRef.current.getCamera();
               const shapes = editorRef.current.getCurrentPageShapes();
               
-              addDebugInfo('🔍 Test funcionalidades básicas', {
-                camera: {
-                  x: camera.x,
-                  y: camera.y,
-                  z: camera.z,
-                  isLocked: camera.isLocked
-                },
-                shapeCount: shapes.length,
-                canPanZoom: 'Test manualmente pan/zoom con trackpad',
-                canPaste: 'Test pegando URL o Ctrl+V'
+              addDebugInfo('🔍 Test funciones', {
+                camera: { x: camera.x, y: camera.y, z: camera.z, isLocked: camera.isLocked },
+                shapeCount: shapes.length
               });
             }
           }}
@@ -439,7 +443,7 @@ export default function Canvas({ session }) {
           onClick={() => {
             setIsReady(prev => {
               const newState = !prev;
-              addDebugInfo(`🔄 Auto-save selectivo ${newState ? 'ENABLED' : 'DISABLED'}`);
+              addDebugInfo(`🔄 Auto-save ${newState ? 'ON' : 'OFF'}`);
               return newState;
             });
           }}
@@ -450,19 +454,17 @@ export default function Canvas({ session }) {
 
         <button 
           onClick={async () => {
-            // Test manual del webhook
             const testData = {
-              type: 'test',
-              message: 'Test manual del webhook',
-              timestamp: new Date().toISOString(),
-              user_id: session.user.id
+              type: 'manual_test',
+              message: 'Test webhook manual',
+              timestamp: new Date().toISOString()
             };
             
             await sendToWebhook(testData);
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: '#f59e0b' }}
         >
-          📤 Test Webhook
+          📤 Test Hook
         </button>
 
         <button 
@@ -474,15 +476,13 @@ export default function Canvas({ session }) {
                 .eq('user_id', session.user.id);
               
               const savedData = data?.[0]?.data;
-              addDebugInfo('🗃️ Estado DB (selectivo)', { 
+              addDebugInfo('🗃️ DB Estado', { 
                 records: data?.length || 0,
-                shapesInDB: Object.keys(savedData?.shapes || {}).length,
-                assetsInDB: Object.keys(savedData?.assets || {}).length,
-                lastUpdate: data?.[0]?.updated_at,
-                dataStructure: savedData ? Object.keys(savedData) : []
+                shapes: Object.keys(savedData?.shapes || {}).length,
+                lastUpdate: data?.[0]?.updated_at
               });
             } catch (err) {
-              addDebugInfo('❌ Error DB', err);
+              addDebugInfo('❌ DB Error', err);
             }
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
@@ -491,13 +491,93 @@ export default function Canvas({ session }) {
         </button>
       </div>
 
-      {/* Debug panel mejorado */}
+      {/* ✅ NUEVA: Ventana de Paste Events (AZUL) */}
       <div style={{
         position: 'absolute',
-        top: '40px',
+        top: '50px',
+        left: '10px',
+        width: '300px',
+        maxHeight: '250px',
+        backgroundColor: 'rgba(59, 130, 246, 0.95)',
+        color: 'white',
+        padding: '10px',
+        borderRadius: '8px',
+        fontSize: '11px',
+        overflow: 'auto',
+        zIndex: 1002,
+        fontFamily: 'monospace',
+        border: '2px solid #3b82f6'
+      }}>
+        <div style={{ fontWeight: 'bold', marginBottom: '10px', fontSize: '12px' }}>
+          📋 PASTE EVENTS & WEBHOOK MONITOR
+        </div>
+        <div style={{ 
+          marginBottom: '10px', 
+          fontSize: '10px', 
+          color: '#dbeafe',
+          borderBottom: '1px solid rgba(255,255,255,0.3)',
+          paddingBottom: '5px'
+        }}>
+          🔗 Endpoint: {isReady ? '🟢 ACTIVO' : '🔴 INACTIVO'} | n8n-webhook
+        </div>
+        
+        {pasteEvents.length === 0 ? (
+          <div style={{ 
+            fontSize: '11px', 
+            color: '#bfdbfe', 
+            fontStyle: 'italic',
+            textAlign: 'center',
+            padding: '20px'
+          }}>
+            💡 Pega una URL o texto largo para ver eventos aquí
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: '10px', marginBottom: '8px', color: '#dbeafe' }}>
+              Total eventos: {pasteEvents.length}
+            </div>
+            {pasteEvents.slice(-6).reverse().map((event) => (
+              <div key={event.id} style={{ 
+                marginBottom: '8px', 
+                borderLeft: `3px solid ${event.success === true ? '#10b981' : event.success === false ? '#ef4444' : '#fbbf24'}`,
+                paddingLeft: '8px',
+                fontSize: '10px'
+              }}>
+                <div style={{ 
+                  color: event.success === true ? '#86efac' : event.success === false ? '#fca5a5' : '#fef3c7',
+                  fontWeight: 'bold'
+                }}>
+                  [{event.time}] {event.type}
+                </div>
+                {event.data && (
+                  <div style={{ 
+                    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                    padding: '4px',
+                    marginTop: '3px',
+                    borderRadius: '3px',
+                    fontSize: '9px',
+                    color: '#dbeafe',
+                    wordBreak: 'break-all'
+                  }}>
+                    {typeof event.data === 'string' ? 
+                      event.data.substring(0, 60) : 
+                      JSON.stringify(event.data).substring(0, 60)
+                    }...
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Debug panel (NEGRO) */}
+      <div style={{
+        position: 'absolute',
+        top: '50px',
         right: '10px',
         width: '320px',
-        maxHeight: '300px',
+        maxHeight: '280px',
         backgroundColor: 'rgba(0, 0, 0, 0.95)',
         color: 'white',
         padding: '8px',
@@ -508,7 +588,7 @@ export default function Canvas({ session }) {
         fontFamily: 'monospace'
       }}>
         <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
-          🐛 Debug ({debugInfo.length}) - Status: {loading ? '⏳ Loading' : '✅ Ready'}
+          🐛 DEBUG ({debugInfo.length}) - {loading ? '⏳ Loading' : '✅ Ready'}
         </div>
         <div style={{ 
           marginBottom: '8px', 
@@ -516,34 +596,9 @@ export default function Canvas({ session }) {
           color: isReady ? '#22c55e' : '#ef4444',
           fontWeight: 'bold'
         }}>
-          AutoSave: {isReady ? '🟢 ENABLED (selectivo)' : '🔴 DISABLED'}
+          AutoSave: {isReady ? '🟢 OPTIMIZADO (4s delay, 8s limit)' : '🔴 OFF'}
         </div>
-        <div style={{ 
-          marginBottom: '8px', 
-          fontSize: '9px', 
-          color: '#fbbf24',
-          fontStyle: 'italic'
-        }}>
-          💡 Persistencia selectiva: Solo shapes/assets, sistema intacto
-        </div>
-        <div style={{ 
-          marginBottom: '8px', 
-          fontSize: '9px', 
-          color: '#06b6d4',
-          fontStyle: 'italic'
-        }}>
-          📋 Paste Listener: {isReady ? 'ACTIVO - Detectando paste events' : 'INACTIVO'}
-        </div>
-        <div style={{ 
-          marginBottom: '8px', 
-          fontSize: '8px', 
-          color: '#94a3b8',
-          fontStyle: 'italic',
-          wordBreak: 'break-all'
-        }}>
-          📤 Webhook: n8n-boominbm...webhook/process-social-url
-        </div>
-        {debugInfo.slice(-10).reverse().map((info, index) => (
+        {debugInfo.slice(-8).reverse().map((info, index) => (
           <div key={index} style={{ 
             marginBottom: '4px', 
             borderBottom: '1px solid #222',
@@ -559,13 +614,12 @@ export default function Canvas({ session }) {
                 padding: '3px',
                 marginTop: '2px',
                 borderRadius: '2px',
-                maxHeight: '60px',
-                overflow: 'auto',
-                whiteSpace: 'pre-wrap',
                 fontSize: '9px',
-                color: '#94a3b8'
+                color: '#94a3b8',
+                maxHeight: '40px',
+                overflow: 'hidden'
               }}>
-                {info.data.substring(0, 150)}{info.data.length > 150 ? '...' : ''}
+                {info.data.substring(0, 80)}...
               </div>
             )}
           </div>
@@ -588,7 +642,7 @@ export default function Canvas({ session }) {
         }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: '18px', marginBottom: '10px' }}>🎨</div>
-            <div>Cargando canvas con persistencia selectiva...</div>
+            <div>Cargando canvas optimizado...</div>
           </div>
         </div>
       )}

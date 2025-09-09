@@ -38,6 +38,9 @@ const uiOverrides = {
 	mainMenu: MyMainMenu,
 }
 
+export default function Canvas({ session }) {
+  const userId = session.user.id;
+
   const handleSave = async (editor) => {
     const snapshot = editor.store.getSnapshot();
     // NOTE: tldraw snapshots are already JSON, so we don't need to stringify them again.
@@ -95,4 +98,4 @@ const uiOverrides = {
       />
     </div>
   )
-}
+

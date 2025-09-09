@@ -88,17 +88,46 @@ export default function Canvas({ session }) {
           const shapesCount = Object.keys(snapshot.store).filter(k => k.startsWith('shape:')).length;
           addDebugInfo('📊 Guardando...', { shapesCount });
 
-          // UPDATE o INSERT
-          const { error: updateError } = await supabase
+          // ✅ PASO 1: Verificar si el usuario ya tiene un registro
+          const { data: existingData, error: selectError } = await supabase
             .from('canvas_states')
-            .update({ 
-              data: snapshot, 
-              updated_at: new Date().toISOString() 
-            })
-            .eq('user_id', session.user.id);
+            .select('id, user_id')
+            .eq('user_id', session.user.id)
+            .single();
 
-          if (updateError) {
-            const { data, error: insertError } = await supabase
+          if (selectError && selectError.code !== 'PGRST116') {
+            addDebugInfo('❌ Error verificando usuario existente', selectError);
+            return;
+          }
+
+          const userExists = !!existingData;
+          addDebugInfo(`🔍 Usuario ${userExists ? 'EXISTS' : 'NUEVO'}`, {
+            userExists,
+            existingRecordId: existingData?.id
+          });
+
+          if (userExists) {
+            // ✅ PASO 2A: Usuario existe → UPDATE
+            const { data: updateData, error: updateError } = await supabase
+              .from('canvas_states')
+              .update({ 
+                data: snapshot, 
+                updated_at: new Date().toISOString() 
+              })
+              .eq('user_id', session.user.id)
+              .select();
+
+            if (updateError) {
+              addDebugInfo('❌ Error en UPDATE', updateError);
+            } else {
+              addDebugInfo('✅ UPDATE exitoso', { 
+                recordId: updateData[0]?.id,
+                shapesCount 
+              });
+            }
+          } else {
+            // ✅ PASO 2B: Usuario nuevo → INSERT
+            const { data: insertData, error: insertError } = await supabase
               .from('canvas_states')
               .insert({ 
                 user_id: session.user.id, 
@@ -108,12 +137,13 @@ export default function Canvas({ session }) {
               .select();
 
             if (insertError) {
-              addDebugInfo('❌ Error guardando', insertError);
+              addDebugInfo('❌ Error en INSERT', insertError);
             } else {
-              addDebugInfo('✅ Guardado (INSERT)', { recordId: data[0]?.id, shapesCount });
+              addDebugInfo('✅ INSERT exitoso - Usuario creado', { 
+                recordId: insertData[0]?.id,
+                shapesCount 
+              });
             }
-          } else {
-            addDebugInfo('✅ Guardado (UPDATE)', { shapesCount });
           }
 
         } catch (error) {
@@ -179,16 +209,17 @@ export default function Canvas({ session }) {
         editor.user.updateUserPreferences({ colorScheme: 'dark' });
         addDebugInfo('🌙 Dark mode activado');
       }
-      
-      editor.updateInstanceState({ isGridMode: true });
-      addDebugInfo('📐 Grid activado');
 
-      // Cargar datos
+      // Cargar datos PRIMERO
       const userData = await loadUserData();
       if (userData) {
         store.loadSnapshot(userData);
         addDebugInfo('✅ Datos cargados en store');
       }
+
+      // ✅ DESPUÉS activar grid (para que no se sobrescriba)
+      editor.updateInstanceState({ isGridMode: true });
+      addDebugInfo('📐 Grid activado (después de cargar datos)');
 
       setLoading(false);
       addDebugInfo('✅ Carga completada');
@@ -221,6 +252,24 @@ export default function Canvas({ session }) {
         left: '10px',
         zIndex: 1002
       }}>
+        <button 
+          onClick={() => {
+            if (editorRef.current) {
+              const currentInstance = editorRef.current.getInstanceState();
+              addDebugInfo('🔍 Instance ACTUAL', {
+                isGridMode: currentInstance.isGridMode,
+                id: currentInstance.id,
+                hasCamera: !!currentInstance.cameraState,
+                keys: Object.keys(currentInstance),
+                cameraState: currentInstance.cameraState
+              });
+            }
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+        >
+          🔍 Instance
+        </button>
+
         <button 
           onClick={() => {
             addDebugInfo('🧪 Estado actual', {

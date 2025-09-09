@@ -1,7 +1,7 @@
-import { Tldraw, DefaultMainMenu, TldrawUiMenuItem, createTLStore } from '@tldraw/tldraw'
+import { Tldraw, DefaultMainMenu, TldrawUiMenuItem } from '@tldraw/tldraw'
 import '@tldraw/tldraw/tldraw.css'
 import { supabase } from './supabaseClient'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 
 const MyMainMenu = () => {
   const handleSignOut = () => {
@@ -24,18 +24,15 @@ const uiOverrides = {
 }
 
 export default function Canvas({ session }) {
-  const [editor, setEditor] = useState(null);
-  const [store] = useState(() => createTLStore());
   const [loading, setLoading] = useState(true);
   const saveTimeout = useRef(null);
+  const hasLoadedData = useRef(false);
 
-  // --- LÓGICA DE CARGA ---
-  useEffect(() => {
-    if (!editor) return;
-
-    setLoading(true);
-
-    const loadData = async () => {
+  // Función para cargar datos del usuario
+  const loadUserData = useCallback(async (editor) => {
+    if (hasLoadedData.current) return;
+    
+    try {
       const { data, error } = await supabase
         .from('canvas_states')
         .select('data')
@@ -44,28 +41,33 @@ export default function Canvas({ session }) {
 
       if (error && error.code !== 'PGRST116') {
         console.error('Error cargando el estado:', error);
+        return;
       }
 
       if (data && data.data) {
-        store.loadSnapshot(data.data);
+        // CORRECCIÓN: Usar editor.loadSnapshot en lugar de store.loadSnapshot
+        editor.loadSnapshot(data.data);
       }
+      
+      hasLoadedData.current = true;
+    } catch (error) {
+      console.error('Error al cargar datos:', error);
+    } finally {
       setLoading(false);
-    };
+    }
+  }, [session.user.id]);
 
-    loadData();
-  }, [editor, session.user.id, store]);
+  // Función para guardar datos
+  const saveUserData = useCallback(async (editor) => {
+    if (saveTimeout.current) {
+      clearTimeout(saveTimeout.current);
+    }
 
-  // --- LÓGICA DE GUARDADO ---
-  useEffect(() => {
-    if (!editor) return;
-
-    const handleChange = () => {
-      if (saveTimeout.current) {
-        clearTimeout(saveTimeout.current);
-      }
-
-      saveTimeout.current = setTimeout(async () => {
-        const snapshot = store.getSnapshot();
+    saveTimeout.current = setTimeout(async () => {
+      try {
+        // CORRECCIÓN: Usar editor.getSnapshot en lugar de store.getSnapshot
+        const snapshot = editor.getSnapshot();
+        
         await supabase
           .from('canvas_states')
           .upsert({ 
@@ -73,33 +75,59 @@ export default function Canvas({ session }) {
             data: snapshot, 
             updated_at: new Date().toISOString() 
           });
-      }, 1000);
-    };
+      } catch (error) {
+        console.error('Error guardando datos:', error);
+      }
+    }, 1000);
+  }, [session.user.id]);
 
-    const cleanup = store.listen(handleChange, { source: 'user', scope: 'document' });
+  // Función que se ejecuta cuando el editor está listo
+  const handleMount = useCallback(async (editor) => {
+    // Configurar dark mode y grid por defecto
+    const currentPrefs = editor.user.getUserPreferences();
+    
+    // Solo aplicar dark mode si no tiene preferencia configurada
+    if (currentPrefs.colorScheme === 'system') {
+      editor.user.updateUserPreferences({ 
+        colorScheme: 'dark' 
+      });
+    }
+    
+    // Siempre activar grid al iniciar
+    editor.updateInstanceState({ 
+      isGridMode: true 
+    });
 
+    // Cargar datos del usuario
+    await loadUserData(editor);
+
+    // CORRECCIÓN: Configurar listener correctamente usando editor.store.listen
+    const cleanup = editor.store.listen(() => {
+      if (!loading && hasLoadedData.current) {
+        saveUserData(editor);
+      }
+    }, { source: 'user', scope: 'document' });
+
+    // Cleanup cuando el componente se desmonte
     return () => {
       cleanup();
       if (saveTimeout.current) {
         clearTimeout(saveTimeout.current);
       }
     };
-  }, [editor, session.user.id, store]);
+  }, [loadUserData, saveUserData, loading]);
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
       <Tldraw
-        store={store}
-        onMount={setEditor}
+        // CORRECCIÓN: Remover store personalizado, usar persistenceKey en su lugar
+        persistenceKey={`user-${session.user.id}`}
+        onMount={handleMount}
         overrides={uiOverrides}
-        forceDarkMode={true}
-        gridMode={true}
+        // CORRECCIÓN: Usar inferDarkMode en lugar de forceDarkMode
+        inferDarkMode
       />
-      {/* AQUÍ ESTÁ EL CAMBIO PRINCIPAL:
-        Mostramos la pantalla de carga como una superposición (overlay) 
-        en lugar de bloquear el renderizado del componente Tldraw.
-        Cuando 'loading' sea false, este div simplemente no se mostrará.
-      */}
+      
       {loading && (
         <div style={{
           position: 'absolute',
@@ -112,7 +140,7 @@ export default function Canvas({ session }) {
           justifyContent: 'center',
           backgroundColor: '#1e1e1e',
           color: 'white',
-          zIndex: 1000 // Para que se muestre por encima del canvas
+          zIndex: 1000
         }}>
           Cargando canvas...
         </div>
@@ -120,4 +148,3 @@ export default function Canvas({ session }) {
     </div>
   )
 }
-

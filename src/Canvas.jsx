@@ -56,6 +56,34 @@ export default function Canvas({ session }) {
     setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
   }, []);
 
+  // ✅ NUEVO: Función para enviar al webhook
+  const sendToWebhook = useCallback(async (pasteData) => {
+    try {
+      addDebugInfo('📤 Enviando al webhook...', pasteData);
+      
+      const response = await fetch('https://n8n-boominbm-u44048.vm.elestio.app/webhook/process-social-url', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: session.user.id,
+          timestamp: new Date().toISOString(),
+          paste_data: pasteData
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        addDebugInfo('✅ Webhook exitoso', result);
+      } else {
+        addDebugInfo('❌ Webhook error', { status: response.status });
+      }
+    } catch (error) {
+      addDebugInfo('❌ Error enviando webhook', error);
+    }
+  }, [session.user.id, addDebugInfo]);
+
   // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
   const extractUserData = useCallback((snapshot) => {
     const userShapes = {};
@@ -139,7 +167,7 @@ export default function Canvas({ session }) {
             return;
           }
 
-          // ✅ EXTRAER SOLO CONTENIO DEL USUARIO (no configuraciones del sistema)
+          // ✅ EXTRAER SOLO CONTENIDO DEL USUARIO (no configuraciones del sistema)
           const userData = extractUserData(snapshot);
           
           addDebugInfo('📊 Datos selectivos extraídos', userData.metadata);
@@ -200,6 +228,78 @@ export default function Canvas({ session }) {
       }
     };
   }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
+
+  // ✅ NUEVO: Listener para detectar paste events
+  useEffect(() => {
+    if (!isReady || !editorRef.current) return;
+
+    addDebugInfo('📋 Configurando listener de paste...');
+
+    const cleanup = store.listen((entry) => {
+      // Detectar elementos agregados (incluye paste)
+      entry.changes.added.forEach(record => {
+        addDebugInfo('➕ Elemento agregado detectado', {
+          type: record.typeName,
+          id: record.id,
+          recordType: record.type || 'unknown'
+        });
+
+        // Detectar diferentes tipos de paste
+        if (record.typeName === 'shape') {
+          const pasteInfo = {
+            type: 'shape',
+            shapeType: record.type,
+            id: record.id,
+            props: record.props,
+            timestamp: new Date().toISOString()
+          };
+
+          // Detectar URLs pegadas
+          if (record.type === 'bookmark' && record.props?.url) {
+            pasteInfo.url = record.props.url;
+            pasteInfo.isURL = true;
+            addDebugInfo('🔗 URL pegada detectada', { url: record.props.url });
+          }
+
+          // Detectar texto pegado
+          if (record.type === 'text' && record.props?.text) {
+            pasteInfo.text = record.props.text;
+            pasteInfo.isText = true;
+            addDebugInfo('📝 Texto pegado detectado', { text: record.props.text });
+          }
+
+          // Detectar imágenes pegadas
+          if (record.type === 'image' && record.props?.src) {
+            pasteInfo.imageSrc = record.props.src;
+            pasteInfo.isImage = true;
+            addDebugInfo('🖼️ Imagen pegada detectada');
+          }
+
+          // Enviar al webhook
+          sendToWebhook(pasteInfo);
+        }
+
+        // Detectar assets pegados
+        if (record.typeName === 'asset') {
+          const assetInfo = {
+            type: 'asset',
+            assetType: record.type,
+            id: record.id,
+            props: record.props,
+            timestamp: new Date().toISOString()
+          };
+
+          addDebugInfo('📎 Asset pegado detectado', { assetType: record.type });
+          sendToWebhook(assetInfo);
+        }
+      });
+    }, { source: 'user', scope: 'document' });
+
+    return () => {
+      addDebugInfo('🧹 Paste listener cleanup');
+      cleanup();
+    };
+  }, [isReady, store, sendToWebhook, addDebugInfo]);
 
   // Función de carga - solo shapes y assets
   const loadUserData = useCallback(async () => {
@@ -346,6 +446,23 @@ export default function Canvas({ session }) {
 
         <button 
           onClick={async () => {
+            // Test manual del webhook
+            const testData = {
+              type: 'test',
+              message: 'Test manual del webhook',
+              timestamp: new Date().toISOString(),
+              user_id: session.user.id
+            };
+            
+            await sendToWebhook(testData);
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: '#f59e0b' }}
+        >
+          📤 Test Webhook
+        </button>
+
+        <button 
+          onClick={async () => {
             try {
               const { data } = await supabase
                 .from('canvas_states')
@@ -404,6 +521,23 @@ export default function Canvas({ session }) {
           fontStyle: 'italic'
         }}>
           💡 Persistencia selectiva: Solo shapes/assets, sistema intacto
+        </div>
+        <div style={{ 
+          marginBottom: '8px', 
+          fontSize: '9px', 
+          color: '#06b6d4',
+          fontStyle: 'italic'
+        }}>
+          📋 Paste Listener: {isReady ? 'ACTIVO - Detectando paste events' : 'INACTIVO'}
+        </div>
+        <div style={{ 
+          marginBottom: '8px', 
+          fontSize: '8px', 
+          color: '#94a3b8',
+          fontStyle: 'italic',
+          wordBreak: 'break-all'
+        }}>
+          📤 Webhook: n8n-boominbm...webhook/process-social-url
         </div>
         {debugInfo.slice(-10).reverse().map((info, index) => (
           <div key={index} style={{ 

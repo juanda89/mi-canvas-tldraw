@@ -1,6 +1,7 @@
-import { Tldraw, DefaultMainMenu, TldrawUiMenuItem } from '@tldraw/tldraw'
+import { Tldraw, DefaultMainMenu, TldrawUiMenuItem, useEditor } from '@tldraw/tldraw'
 import '@tldraw/tldraw/tldraw.css'
 import { supabase } from './supabaseClient'
+import { useCallback } from 'react'
 
 // Simple throttle function
 function throttle(func, limit) {
@@ -18,24 +19,23 @@ function throttle(func, limit) {
 
 // Custom Main Menu with Sign Out button
 const MyMainMenu = () => {
-	const handleSignOut = () => {
-		supabase.auth.signOut()
-	}
+  const handleSignOut = () => {
+    supabase.auth.signOut()
+  }
 
-	return (
-		<DefaultMainMenu>
-			<TldrawUiMenuItem
-				id="sign-out"
-				label="Cerrar Sesión"
-				onSelect={handleSignOut}
-				icon="log-out"
-			/>
-		</DefaultMainMenu>
-	)
+  return (
+    <DefaultMainMenu>
+      <TldrawUiMenuItem
+        id="sign-out"
+        label="Cerrar Sesión"
+        onSelect={handleSignOut}
+      />
+    </DefaultMainMenu>
+  )
 }
 
 const uiOverrides = {
-	mainMenu: MyMainMenu,
+  mainMenu: MyMainMenu,
 }
 
 export default function Canvas({ session }) {
@@ -43,7 +43,6 @@ export default function Canvas({ session }) {
 
   const handleSave = async (editor) => {
     const snapshot = editor.store.getSnapshot();
-    // NOTE: tldraw snapshots are already JSON, so we don't need to stringify them again.
     
     const { error } = await supabase
       .from('canvas_states')
@@ -57,7 +56,7 @@ export default function Canvas({ session }) {
     }
   };
 
-  const throttledSave = throttle(handleSave, 1000);
+  const throttledSave = useCallback(throttle(handleSave, 1000), [userId]);
 
   const handleLoad = async (editor) => {
     const { data, error } = await supabase
@@ -72,7 +71,6 @@ export default function Canvas({ session }) {
     }
 
     if (data && data.data) {
-        // NOTE: The data is already a JS object, no need to parse it.
         editor.store.loadSnapshot(data.data);
     }
   };
@@ -80,14 +78,20 @@ export default function Canvas({ session }) {
   const handleEditorMount = (editor) => {
     handleLoad(editor);
 
+    // Listen for changes to save them
     const handleChange = (change) => {
-        // This check is to prevent an infinite loop of saves and loads
+        // We only want to save changes made by the user
         if(change.source === 'user') {
             throttledSave(editor);
         }
     };
 
-    editor.store.listen(handleChange);
+    const cleanup = editor.store.listen(handleChange);
+
+    // Optional: Return a cleanup function for when the component unmounts
+    return () => {
+        cleanup();
+    }
   };
 
   return (
@@ -95,7 +99,9 @@ export default function Canvas({ session }) {
       <Tldraw
         onMount={handleEditorMount}
         overrides={uiOverrides}
+        forceDarkMode={true} // <-- Añadí esto para asegurar el modo oscuro
+        gridMode={true}      // <-- Y la grilla
       />
     </div>
   )
-
+} // <-- ¡AQUÍ ESTÁ LA LLAVE CORREGIDA!

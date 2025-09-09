@@ -38,9 +38,6 @@ const uiOverrides = {
 	mainMenu: MyMainMenu,
 }
 
-export default function Canvas({ session }) {
-  const userId = session.user.id;
-
   const handleSave = async (editor) => {
     const snapshot = editor.store.getSnapshot();
     // NOTE: tldraw snapshots are already JSON, so we don't need to stringify them again.
@@ -74,10 +71,6 @@ export default function Canvas({ session }) {
     if (data && data.data) {
         // NOTE: The data is already a JS object, no need to parse it.
         editor.store.loadSnapshot(data.data);
-    } else {
-        // Only apply these settings if no snapshot was loaded
-        editor.user.updateUserPreferences({ colorScheme: 'dark' });
-        editor.updateInstanceState({ isGridMode: true });
     }
   };
 

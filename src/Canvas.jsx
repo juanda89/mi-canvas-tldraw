@@ -27,12 +27,12 @@ export default function Canvas({ session }) {
   const [loading, setLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState([]);
   const [isReady, setIsReady] = useState(false);
-  const [pasteEvents, setPasteEvents] = useState([]); // ✅ NUEVO: Tracking de paste events
+  const [pasteEvents, setPasteEvents] = useState([]);
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
-  const lastSaveTime = useRef(0); // ✅ NUEVO: Rate limiting
+  const lastSaveTime = useRef(0);
   
-  // Store limpio - NO cargar snapshots completos que corrompan el sistema
+  // Store limpio
   const [store] = useState(() => {
     const cleanStore = createTLStore();
     try {
@@ -58,7 +58,7 @@ export default function Canvas({ session }) {
     setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
   }, []);
 
-  // ✅ NUEVO: Función para trackear paste events
+  // Función para trackear paste events
   const addPasteEvent = useCallback((type, data, success = null) => {
     const pasteEntry = {
       id: Date.now(),
@@ -73,7 +73,7 @@ export default function Canvas({ session }) {
     addDebugInfo(`📋 Paste Event: ${type}`, data);
   }, [addDebugInfo]);
 
-  // ✅ NUEVO: Función para enviar al webhook
+  // Función para enviar al webhook
   const sendToWebhook = useCallback(async (pasteData) => {
     try {
       addPasteEvent('📤 sending', pasteData);
@@ -104,7 +104,7 @@ export default function Canvas({ session }) {
     }
   }, [session.user.id, addPasteEvent]);
 
-  // ✅ Extraer solo contenido del usuario (shapes y assets)
+  // Extraer contenido del usuario
   const extractUserData = useCallback((snapshot) => {
     const userShapes = {};
     const userAssets = {};
@@ -129,11 +129,11 @@ export default function Canvas({ session }) {
     };
   }, []);
 
-  // ✅ Cargar solo shapes sin tocar configuraciones del sistema
+  // Cargar shapes
   const loadUserShapes = useCallback((userData) => {
     if (!userData.shapes || !editorRef.current) return;
 
-    addDebugInfo('📥 Cargando shapes selectivamente...', {
+    addDebugInfo('📥 Cargando shapes...', {
       shapesToLoad: Object.keys(userData.shapes).length,
       assetsToLoad: Object.keys(userData.assets || {}).length
     });
@@ -155,44 +155,31 @@ export default function Canvas({ session }) {
     }
   }, [addDebugInfo]);
 
-  // ✅ OPTIMIZADO: Auto-save sin lag
+  // ✅ NUEVO: Auto-save SOLO para creación/eliminación (NO movimientos)
   useEffect(() => {
     if (!isReady) return;
 
-    addDebugInfo('🔄 Auto-save OPTIMIZADO iniciado');
-
-    let changeCount = 0;
-    let significantChanges = 0;
+    addDebugInfo('🔄 Auto-save: SOLO creación/eliminación iniciado');
 
     const cleanup = store.listen((entry) => {
-      changeCount++;
-      
-      // Solo contar cambios significativos
-      const hasShapeChanges = entry.changes.added.some(record => record.typeName === 'shape') || 
-                             entry.changes.updated.some(record => record.typeName === 'shape');
+      // ✅ CLAVE: Solo escuchar added/removed, NO updated (evita lag en movimientos)
+      const hasCreation = entry.changes.added.some(record => record.typeName === 'shape');
+      const hasDeletion = entry.changes.removed.some(record => record.typeName === 'shape');
 
-      if (hasShapeChanges) {
-        significantChanges++;
-        
-        // Solo log cada 3 cambios significativos
-        if (significantChanges % 3 === 0) {
-          addDebugInfo(`💾 ${significantChanges} cambios → guardando en 4s`);
-        }
+      // ✅ IGNORAR completamente updates (movimientos, redimensionar, etc.)
+      if (!hasCreation && !hasDeletion) {
+        return; // No hacer nada si solo son movimientos
       }
 
-      if (saveTimeout.current) {
-        clearTimeout(saveTimeout.current);
-      }
+      addDebugInfo(`📝 Shape ${hasCreation ? 'creada' : 'eliminada'} → save en 2s`);
 
-      // Solo continuar si hay cambios significativos
-      if (significantChanges === 0) return;
+      if (saveTimeout.current) clearTimeout(saveTimeout.current);
 
       saveTimeout.current = setTimeout(async () => {
         const now = Date.now();
         
-        // Rate limiting: 8 segundos mínimo entre saves
-        if (now - lastSaveTime.current < 8000) {
-          addDebugInfo('⏭️ Save bloqueado (rate limit 8s)');
+        if (now - lastSaveTime.current < 3000) {
+          addDebugInfo('⏭️ Save bloqueado (3s limit)');
           return;
         }
 
@@ -204,11 +191,6 @@ export default function Canvas({ session }) {
 
           const userData = extractUserData(snapshot);
           
-          if (userData.metadata.shapesCount === 0) {
-            addDebugInfo('⏭️ Sin shapes para guardar');
-            return;
-          }
-
           addDebugInfo('💾 Guardando...', { shapes: userData.metadata.shapesCount });
 
           const { data: updateData, error: updateError } = await supabase
@@ -227,8 +209,6 @@ export default function Canvas({ session }) {
 
           if (updateData && updateData.length > 0) {
             addDebugInfo('✅ Guardado OK', { shapes: userData.metadata.shapesCount });
-            changeCount = 0;
-            significantChanges = 0;
           } else {
             const { data: insertData, error: insertError } = await supabase
               .from('canvas_states')
@@ -241,14 +221,12 @@ export default function Canvas({ session }) {
 
             if (!insertError) {
               addDebugInfo('✅ Usuario nuevo creado');
-              changeCount = 0;
-              significantChanges = 0;
             }
           }
         } catch (error) {
           addDebugInfo('❌ Auto-save error', error);
         }
-      }, 4000); // 4 segundos delay
+      }, 2000); // 2 segundos
 
     }, { source: 'user', scope: 'document' });
 
@@ -259,22 +237,24 @@ export default function Canvas({ session }) {
     };
   }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
 
-  // ✅ NUEVO: Paste event listener
+  // ✅ NUEVO: Paste listener INDEPENDIENTE del auto-save
   useEffect(() => {
-    if (!isReady || !editorRef.current) return;
+    // ✅ NO depende de isReady - funciona siempre
+    if (!editorRef.current) return;
 
-    addDebugInfo('📋 Paste listener iniciado');
+    addDebugInfo('📋 Paste listener INDEPENDIENTE iniciado');
 
     let pasteTimeout = null;
 
     const cleanup = store.listen((entry) => {
+      // Detectar paste events
       const pasteShapes = entry.changes.added.filter(record => {
         if (record.typeName !== 'shape') return false;
         
-        // URLs
+        // URLs (bookmarks)
         if (record.type === 'bookmark' && record.props?.url) return true;
         
-        // Texto largo (probable paste)
+        // Texto largo
         if (record.type === 'text' && record.props?.text && record.props.text.length > 20) return true;
         
         // Imágenes
@@ -315,16 +295,16 @@ export default function Canvas({ session }) {
               await sendToWebhook(pasteData);
             }
           }
-        }, 500); // 500ms debounce
+        }, 300);
       }
     }, { source: 'user', scope: 'document' });
 
     return () => {
-      addDebugInfo('🧹 Paste listener cleanup');
+      addDebugInfo('🧹 Paste listener independiente cleanup');
       cleanup();
       if (pasteTimeout) clearTimeout(pasteTimeout);
     };
-  }, [isReady, store, addPasteEvent, sendToWebhook, addDebugInfo]);
+  }, [store, addPasteEvent, sendToWebhook, addDebugInfo]); // ✅ Sin isReady
 
   // Función de carga
   const loadUserData = useCallback(async () => {
@@ -388,7 +368,7 @@ export default function Canvas({ session }) {
 
       setTimeout(() => {
         setIsReady(true);
-        addDebugInfo('🟢 Sistema LISTO');
+        addDebugInfo('🟢 Auto-save LISTO (solo creación/eliminación)');
       }, 2000);
 
     } catch (error) {
@@ -443,7 +423,7 @@ export default function Canvas({ session }) {
           onClick={() => {
             setIsReady(prev => {
               const newState = !prev;
-              addDebugInfo(`🔄 Auto-save ${newState ? 'ON' : 'OFF'}`);
+              addDebugInfo(`🔄 Auto-save ${newState ? 'ON (sin lag)' : 'OFF'}`);
               return newState;
             });
           }}
@@ -470,6 +450,58 @@ export default function Canvas({ session }) {
         <button 
           onClick={async () => {
             try {
+              addDebugInfo('💾 Guardado manual...');
+              
+              const snapshot = store.getSnapshot();
+              if (!snapshot?.store) {
+                addDebugInfo('❌ No hay snapshot');
+                return;
+              }
+
+              const userData = extractUserData(snapshot);
+              
+              const { data: updateData, error: updateError } = await supabase
+                .from('canvas_states')
+                .update({ 
+                  data: userData,
+                  updated_at: new Date().toISOString() 
+                })
+                .eq('user_id', session.user.id)
+                .select();
+
+              if (updateError) {
+                addDebugInfo('❌ Error manual', updateError);
+                return;
+              }
+
+              if (updateData && updateData.length > 0) {
+                addDebugInfo('✅ Guardado manual OK', { shapes: userData.metadata.shapesCount });
+              } else {
+                const { data: insertData, error: insertError } = await supabase
+                  .from('canvas_states')
+                  .insert({ 
+                    user_id: session.user.id, 
+                    data: userData,
+                    updated_at: new Date().toISOString() 
+                  })
+                  .select();
+
+                if (!insertError) {
+                  addDebugInfo('✅ Manual nuevo OK');
+                }
+              }
+            } catch (error) {
+              addDebugInfo('❌ Error manual', error);
+            }
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: '#10b981' }}
+        >
+          💾 Manual
+        </button>
+
+        <button 
+          onClick={async () => {
+            try {
               const { data } = await supabase
                 .from('canvas_states')
                 .select('id, user_id, updated_at, data')
@@ -491,12 +523,12 @@ export default function Canvas({ session }) {
         </button>
       </div>
 
-      {/* ✅ NUEVA: Ventana de Paste Events (AZUL) */}
+      {/* VENTANA AZUL - Paste Events */}
       <div style={{
         position: 'absolute',
         top: '50px',
         left: '10px',
-        width: '300px',
+        width: '320px',
         maxHeight: '250px',
         backgroundColor: 'rgba(59, 130, 246, 0.95)',
         color: 'white',
@@ -518,7 +550,7 @@ export default function Canvas({ session }) {
           borderBottom: '1px solid rgba(255,255,255,0.3)',
           paddingBottom: '5px'
         }}>
-          🔗 Endpoint: {isReady ? '🟢 ACTIVO' : '🔴 INACTIVO'} | n8n-webhook
+          🔗 Webhook: 🟢 INDEPENDIENTE | n8n-boominbm...
         </div>
         
         {pasteEvents.length === 0 ? (
@@ -571,7 +603,7 @@ export default function Canvas({ session }) {
         )}
       </div>
 
-      {/* Debug panel (NEGRO) */}
+      {/* VENTANA NEGRA - Debug */}
       <div style={{
         position: 'absolute',
         top: '50px',
@@ -593,10 +625,19 @@ export default function Canvas({ session }) {
         <div style={{ 
           marginBottom: '8px', 
           fontSize: '10px', 
+          color: '#fbbf24',
+          borderBottom: '1px solid rgba(255,187,36,0.3)',
+          paddingBottom: '4px'
+        }}>
+          📋 Paste: 🟢 INDEPENDIENTE (funciona siempre)
+        </div>
+        <div style={{ 
+          marginBottom: '8px', 
+          fontSize: '10px', 
           color: isReady ? '#22c55e' : '#ef4444',
           fontWeight: 'bold'
         }}>
-          AutoSave: {isReady ? '🟢 OPTIMIZADO (4s delay, 8s limit)' : '🔴 OFF'}
+          AutoSave: {isReady ? '🟢 SOLO CREACIÓN/ELIMINACIÓN (sin lag)' : '🔴 OFF'}
         </div>
         {debugInfo.slice(-8).reverse().map((info, index) => (
           <div key={index} style={{ 
@@ -642,7 +683,10 @@ export default function Canvas({ session }) {
         }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: '18px', marginBottom: '10px' }}>🎨</div>
-            <div>Cargando canvas optimizado...</div>
+            <div>Cargando canvas sin lag...</div>
+            <div style={{ fontSize: '12px', marginTop: '8px', color: '#888' }}>
+              Auto-save: Solo creación/eliminación | Paste: Independiente
+            </div>
           </div>
         </div>
       )}

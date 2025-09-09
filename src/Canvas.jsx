@@ -1,116 +1,348 @@
 import { Tldraw, DefaultMainMenu, TldrawUiMenuItem, createTLStore } from '@tldraw/tldraw'
 import '@tldraw/tldraw/tldraw.css'
 import { supabase } from './supabaseClient'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 
 const MyMainMenu = () => {
-  const handleSignOut = () => { supabase.auth.signOut() }
+  const handleSignOut = () => {
+    supabase.auth.signOut()
+  }
+
   return (
     <DefaultMainMenu>
-      <TldrawUiMenuItem id="sign-out" label="Cerrar Sesión" onSelect={handleSignOut} />
+      <TldrawUiMenuItem
+        id="sign-out"
+        label="Cerrar Sesión"
+        onSelect={handleSignOut}
+      />
     </DefaultMainMenu>
   )
 }
 
-const uiOverrides = { mainMenu: MyMainMenu }
+const uiOverrides = {
+  mainMenu: MyMainMenu,
+}
 
 export default function Canvas({ session }) {
-  const [editor, setEditor] = useState(null)
-  const [store] = useState(() => createTLStore())
-  const [loading, setLoading] = useState(true)
-  const savingTimeout = useRef<NodeJS.Timeout | null>(null)
-  const hydratingRef = useRef(false) // 👈 evita guardar mientras cargas
+  const [loading, setLoading] = useState(true);
+  const [debugInfo, setDebugInfo] = useState([]);
+  const [isReady, setIsReady] = useState(false); // ✅ NUEVO: Estado simple para saber si puede guardar
+  const saveTimeout = useRef(null);
+  const editorRef = useRef(null);
+  
+  // Store limpio
+  const [store] = useState(() => {
+    const cleanStore = createTLStore();
+    try {
+      localStorage.removeItem(`tldraw_store_user-${session.user.id}`);
+      localStorage.removeItem(`tldraw_document_user-${session.user.id}`);
+      localStorage.removeItem(`tldraw_state_user-${session.user.id}`);
+    } catch (e) {
+      console.warn('Could not clear localStorage:', e);
+    }
+    return cleanStore;
+  });
 
-  // --- CARGA (hidratar) ---
+  // Debug function
+  const addDebugInfo = useCallback((message, data = null) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const debugEntry = {
+      time: timestamp,
+      message,
+      data: data ? JSON.stringify(data, null, 2) : null
+    };
+    
+    console.log(`🐛 [${timestamp}] ${message}`, data || '');
+    setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
+  }, []);
+
+  // ✅ APPROACH NUEVO: useEffect separado para guardado automático
   useEffect(() => {
-    if (!editor || !session?.user?.id) return
-    let mounted = true
-
-    ;(async () => {
-      setLoading(true)
-      hydratingRef.current = true
-      try {
-        const { data, error } = await supabase
-          .from('canvas_states')
-          .select('data')
-          .eq('user_id', session.user.id)
-          .single()
-
-        if (error && error.code !== 'PGRST116') {
-          console.error('Error cargando el estado:', error)
-        }
-
-        if (data?.data) {
-          // 🔧 migra el snapshot a la versión actual del schema
-          const migrated = store.schema.migrateSnapshot(data.data)
-          store.loadSnapshot(migrated)
-        }
-      } catch (e) {
-        console.error('Fallo al hidratar:', e)
-      } finally {
-        if (mounted) {
-          hydratingRef.current = false
-          setLoading(false)
-        }
-      }
-    })()
-
-    return () => { mounted = false }
-  }, [editor, session?.user?.id, store])
-
-  // --- AUTO-GUARDADO (debounce) ---
-  useEffect(() => {
-    if (!editor || !session?.user?.id) return
-
-    const onAnyChange = () => {
-      if (hydratingRef.current) return // ⛔️ no guardes durante carga
-      if (savingTimeout.current) clearTimeout(savingTimeout.current)
-
-      savingTimeout.current = setTimeout(async () => {
-        try {
-          const snapshot = store.getSnapshot()
-          const { error } = await supabase
-            .from('canvas_states')
-            .upsert(
-              {
-                user_id: session.user.id,
-                data: snapshot,
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: 'user_id', returning: 'minimal' } // 👈 clave
-            )
-          if (error) console.error('Error guardando snapshot:', error)
-        } catch (e) {
-          console.error('Excepción guardando snapshot:', e)
-        }
-      }, 800) // 800–1200ms va bien
+    if (!isReady) {
+      addDebugInfo('⏭️ AutoSave: No ready yet');
+      return;
     }
 
-    // 💡 Relaja filtros para no perder eventos relevantes
-    const unsubscribe = store.listen(onAnyChange /* no filters */)
+    addDebugInfo('🔄 Configurando auto-save listener...');
+
+    let changeCount = 0;
+    const cleanup = store.listen(() => {
+      changeCount++;
+      addDebugInfo(`🔄 Store cambio #${changeCount} - AutoSave activo`);
+
+      // ✅ SIMPLE: Si está ready, guardar
+      if (saveTimeout.current) {
+        clearTimeout(saveTimeout.current);
+      }
+
+      saveTimeout.current = setTimeout(async () => {
+        try {
+          addDebugInfo('💾 Auto-guardando...');
+          
+          const snapshot = store.getSnapshot();
+          if (!snapshot?.store) {
+            addDebugInfo('❌ Snapshot inválido');
+            return;
+          }
+
+          const shapesCount = Object.keys(snapshot.store).filter(k => k.startsWith('shape:')).length;
+          addDebugInfo('📊 Guardando...', { shapesCount });
+
+          // UPDATE o INSERT
+          const { error: updateError } = await supabase
+            .from('canvas_states')
+            .update({ 
+              data: snapshot, 
+              updated_at: new Date().toISOString() 
+            })
+            .eq('user_id', session.user.id);
+
+          if (updateError) {
+            const { data, error: insertError } = await supabase
+              .from('canvas_states')
+              .insert({ 
+                user_id: session.user.id, 
+                data: snapshot, 
+                updated_at: new Date().toISOString() 
+              })
+              .select();
+
+            if (insertError) {
+              addDebugInfo('❌ Error guardando', insertError);
+            } else {
+              addDebugInfo('✅ Guardado (INSERT)', { recordId: data[0]?.id, shapesCount });
+            }
+          } else {
+            addDebugInfo('✅ Guardado (UPDATE)', { shapesCount });
+          }
+
+        } catch (error) {
+          addDebugInfo('❌ Error auto-save', error);
+        }
+      }, 1000);
+
+    }, { source: 'user', scope: 'document' });
 
     return () => {
-      unsubscribe()
-      if (savingTimeout.current) clearTimeout(savingTimeout.current)
+      addDebugInfo('🧹 Auto-save cleanup');
+      cleanup();
+      if (saveTimeout.current) {
+        clearTimeout(saveTimeout.current);
+      }
+    };
+  }, [isReady, store, session.user.id, addDebugInfo]); // ✅ Solo depende de isReady
+
+  // Función de carga simplificada
+  const loadUserData = useCallback(async () => {
+    try {
+      addDebugInfo('📥 Cargando desde Supabase...');
+      
+      const { data, error } = await supabase
+        .from('canvas_states')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (error?.code === 'PGRST116') {
+        addDebugInfo('ℹ️ Usuario nuevo - sin datos');
+        return null;
+      }
+
+      if (error) {
+        addDebugInfo('❌ Error cargando', error);
+        return null;
+      }
+
+      if (data?.data) {
+        addDebugInfo('📊 Datos encontrados', {
+          shapes: Object.keys(data.data.store || {}).filter(k => k.startsWith('shape:')).length
+        });
+        return data.data;
+      }
+
+      return null;
+    } catch (error) {
+      addDebugInfo('❌ Error inesperado cargando', error);
+      return null;
     }
-  }, [editor, session?.user?.id, store])
+  }, [session.user.id, addDebugInfo]);
+
+  // ✅ onMount SIMPLIFICADO - solo cargar y configurar
+  const handleMount = useCallback(async (editor) => {
+    editorRef.current = editor;
+    addDebugInfo('🚀 Editor montado');
+
+    try {
+      // Configurar preferencias
+      const prefs = editor.user.getUserPreferences();
+      if (prefs.colorScheme === 'system') {
+        editor.user.updateUserPreferences({ colorScheme: 'dark' });
+        addDebugInfo('🌙 Dark mode activado');
+      }
+      
+      editor.updateInstanceState({ isGridMode: true });
+      addDebugInfo('📐 Grid activado');
+
+      // Cargar datos
+      const userData = await loadUserData();
+      if (userData) {
+        store.loadSnapshot(userData);
+        addDebugInfo('✅ Datos cargados en store');
+      }
+
+      setLoading(false);
+      addDebugInfo('✅ Carga completada');
+
+      // ✅ CRÍTICO: Habilitar auto-save después de un delay
+      setTimeout(() => {
+        setIsReady(true);
+        addDebugInfo('🟢 Auto-save HABILITADO');
+      }, 2000); // 2 segundos de delay
+
+    } catch (error) {
+      addDebugInfo('❌ Error en mount', error);
+      setLoading(false);
+    }
+  }, [loadUserData, store, addDebugInfo]);
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
       <Tldraw
         store={store}
-        onMount={setEditor}
+        onMount={handleMount}
         overrides={uiOverrides}
-        forceDarkMode
-        gridMode
+        inferDarkMode
       />
+      
+      {/* Botones de test */}
+      <div style={{
+        position: 'absolute',
+        top: '10px',
+        left: '10px',
+        zIndex: 1002
+      }}>
+        <button 
+          onClick={() => {
+            addDebugInfo('🧪 Estado actual', {
+              loading,
+              isReady,
+              storeId: store.id
+            });
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+        >
+          🧪 Estado
+        </button>
+        
+        <button 
+          onClick={() => {
+            setIsReady(prev => {
+              const newState = !prev;
+              addDebugInfo(`🔄 Auto-save ${newState ? 'ENABLED' : 'DISABLED'}`);
+              return newState;
+            });
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: isReady ? '#22c55e' : '#ef4444' }}
+        >
+          {isReady ? '🟢' : '🔴'} AutoSave
+        </button>
+
+        <button 
+          onClick={async () => {
+            try {
+              const { data } = await supabase
+                .from('canvas_states')
+                .select('id, user_id, updated_at')
+                .eq('user_id', session.user.id);
+              
+              addDebugInfo('🗃️ Estado DB', { 
+                records: data?.length || 0,
+                lastUpdate: data?.[0]?.updated_at
+              });
+            } catch (err) {
+              addDebugInfo('❌ Error DB', err);
+            }
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+        >
+          🗃️ DB
+        </button>
+      </div>
+
+      {/* Debug panel */}
+      <div style={{
+        position: 'absolute',
+        top: '40px',
+        right: '10px',
+        width: '320px',
+        maxHeight: '300px',
+        backgroundColor: 'rgba(0, 0, 0, 0.95)',
+        color: 'white',
+        padding: '8px',
+        borderRadius: '6px',
+        fontSize: '11px',
+        overflow: 'auto',
+        zIndex: 1001,
+        fontFamily: 'monospace'
+      }}>
+        <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
+          🐛 Debug ({debugInfo.length}) - Status: {loading ? '⏳ Loading' : '✅ Ready'}
+        </div>
+        <div style={{ 
+          marginBottom: '8px', 
+          fontSize: '10px', 
+          color: isReady ? '#22c55e' : '#ef4444',
+          fontWeight: 'bold'
+        }}>
+          AutoSave: {isReady ? '🟢 ENABLED' : '🔴 DISABLED'}
+        </div>
+        {debugInfo.slice(-10).reverse().map((info, index) => (
+          <div key={index} style={{ 
+            marginBottom: '4px', 
+            borderBottom: '1px solid #222',
+            paddingBottom: '3px',
+            fontSize: '10px'
+          }}>
+            <div style={{ color: '#4ade80' }}>
+              [{info.time}] {info.message}
+            </div>
+            {info.data && (
+              <div style={{ 
+                backgroundColor: '#111',
+                padding: '3px',
+                marginTop: '2px',
+                borderRadius: '2px',
+                maxHeight: '60px',
+                overflow: 'auto',
+                whiteSpace: 'pre-wrap',
+                fontSize: '9px',
+                color: '#94a3b8'
+              }}>
+                {info.data.substring(0, 150)}{info.data.length > 150 ? '...' : ''}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      
       {loading && (
         <div style={{
-          position: 'absolute', inset: 0, display: 'flex',
-          alignItems: 'center', justifyContent: 'center',
-          backgroundColor: '#1e1e1e', color: 'white', zIndex: 1000
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: '#1e1e1e',
+          color: 'white',
+          zIndex: 1000
         }}>
-          Cargando canvas...
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '18px', marginBottom: '10px' }}>🎨</div>
+            <div>Cargando canvas...</div>
+          </div>
         </div>
       )}
     </div>

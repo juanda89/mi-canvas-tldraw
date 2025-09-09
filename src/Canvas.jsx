@@ -26,11 +26,11 @@ const uiOverrides = {
 export default function Canvas({ session }) {
   const [loading, setLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState([]);
-  const [isReady, setIsReady] = useState(false); // ✅ NUEVO: Estado simple para saber si puede guardar
+  const [isReady, setIsReady] = useState(false);
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
   
-  // Store limpio
+  // Store limpio - MANTENER sin cargar snapshots completos
   const [store] = useState(() => {
     const cleanStore = createTLStore();
     try {
@@ -56,6 +56,63 @@ export default function Canvas({ session }) {
     setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
   }, []);
 
+  // ✅ NUEVO: Extraer solo shapes y datos seguros del snapshot
+  const extractUserData = (snapshot) => {
+    const userShapes = {};
+    const userAssets = {};
+    
+    // Solo extraer shapes (dibujos del usuario)
+    Object.entries(snapshot.store).forEach(([key, value]) => {
+      if (key.startsWith('shape:') && value.typeName === 'shape') {
+        userShapes[key] = value;
+      }
+      if (key.startsWith('asset:') && value.typeName === 'asset') {
+        userAssets[key] = value;
+      }
+    });
+
+    return {
+      shapes: userShapes,
+      assets: userAssets,
+      metadata: {
+        shapesCount: Object.keys(userShapes).length,
+        assetsCount: Object.keys(userAssets).length,
+        savedAt: new Date().toISOString()
+      }
+    };
+  };
+
+  // ✅ NUEVO: Cargar solo shapes sin tocar configuraciones del sistema
+  const loadUserShapes = (userData) => {
+    if (!userData.shapes) return;
+
+    addDebugInfo('📥 Cargando shapes selectivamente...', {
+      shapesToLoad: Object.keys(userData.shapes).length,
+      assetsToLoad: Object.keys(userData.assets || {}).length
+    });
+
+    // Crear shapes una por una (sin loadSnapshot completo)
+    const shapesToCreate = Object.values(userData.shapes);
+    const assetsToCreate = Object.values(userData.assets || {});
+
+    try {
+      // Crear assets primero
+      if (assetsToCreate.length > 0) {
+        editorRef.current.createAssets(assetsToCreate);
+        addDebugInfo('✅ Assets cargados', { count: assetsToCreate.length });
+      }
+
+      // Crear shapes
+      if (shapesToCreate.length > 0) {
+        editorRef.current.createShapes(shapesToCreate);
+        addDebugInfo('✅ Shapes cargados', { count: shapesToCreate.length });
+      }
+
+    } catch (error) {
+      addDebugInfo('❌ Error cargando shapes', error);
+    }
+  };
+
   // ✅ APPROACH NUEVO: useEffect separado para guardado automático
   useEffect(() => {
     if (!isReady) {
@@ -63,21 +120,20 @@ export default function Canvas({ session }) {
       return;
     }
 
-    addDebugInfo('🔄 Configurando auto-save listener...');
+    addDebugInfo('🔄 Configurando auto-save selectivo...');
 
     let changeCount = 0;
     const cleanup = store.listen(() => {
       changeCount++;
       addDebugInfo(`🔄 Store cambio #${changeCount} - AutoSave activo`);
 
-      // ✅ SIMPLE: Si está ready, guardar
       if (saveTimeout.current) {
         clearTimeout(saveTimeout.current);
       }
 
       saveTimeout.current = setTimeout(async () => {
         try {
-          addDebugInfo('💾 Auto-guardando...');
+          addDebugInfo('💾 Auto-guardando (selectivo)...');
           
           const snapshot = store.getSnapshot();
           if (!snapshot?.store) {
@@ -85,10 +141,12 @@ export default function Canvas({ session }) {
             return;
           }
 
-          const shapesCount = Object.keys(snapshot.store).filter(k => k.startsWith('shape:')).length;
-          addDebugInfo('📊 Guardando...', { shapesCount });
+          // ✅ EXTRAER SOLO DATOS DEL USUARIO (no configuraciones del sistema)
+          const userData = extractUserData(snapshot);
+          
+          addDebugInfo('📊 Datos extraídos', userData.metadata);
 
-          // ✅ PASO 1: Verificar si el usuario ya tiene un registro
+          // Verificar si el usuario existe
           const { data: existingData, error: selectError } = await supabase
             .from('canvas_states')
             .select('id, user_id')
@@ -107,11 +165,11 @@ export default function Canvas({ session }) {
           });
 
           if (userExists) {
-            // ✅ PASO 2A: Usuario existe → UPDATE
+            // Usuario existe → UPDATE solo con datos del usuario
             const { data: updateData, error: updateError } = await supabase
               .from('canvas_states')
               .update({ 
-                data: snapshot, 
+                data: userData, // ✅ Solo shapes y assets, no configuraciones del sistema
                 updated_at: new Date().toISOString() 
               })
               .eq('user_id', session.user.id)
@@ -120,18 +178,18 @@ export default function Canvas({ session }) {
             if (updateError) {
               addDebugInfo('❌ Error en UPDATE', updateError);
             } else {
-              addDebugInfo('✅ UPDATE exitoso', { 
+              addDebugInfo('✅ UPDATE exitoso (selectivo)', { 
                 recordId: updateData[0]?.id,
-                shapesCount 
+                shapesCount: userData.metadata.shapesCount
               });
             }
           } else {
-            // ✅ PASO 2B: Usuario nuevo → INSERT
+            // Usuario nuevo → INSERT
             const { data: insertData, error: insertError } = await supabase
               .from('canvas_states')
               .insert({ 
                 user_id: session.user.id, 
-                data: snapshot, 
+                data: userData,
                 updated_at: new Date().toISOString() 
               })
               .select();
@@ -139,9 +197,9 @@ export default function Canvas({ session }) {
             if (insertError) {
               addDebugInfo('❌ Error en INSERT', insertError);
             } else {
-              addDebugInfo('✅ INSERT exitoso - Usuario creado', { 
+              addDebugInfo('✅ INSERT exitoso - Usuario creado (selectivo)', { 
                 recordId: insertData[0]?.id,
-                shapesCount 
+                shapesCount: userData.metadata.shapesCount
               });
             }
           }
@@ -160,12 +218,84 @@ export default function Canvas({ session }) {
         clearTimeout(saveTimeout.current);
       }
     };
-  }, [isReady, store, session.user.id, addDebugInfo]); // ✅ Solo depende de isReady
+  }, [isReady, store, session.user.id, addDebugInfo]);
 
-  // Función de carga simplificada
+  // ✅ NUEVO: Listener para detectar URLs pegadas
+  useEffect(() => {
+    if (!isReady || !editorRef.current) return;
+
+    addDebugInfo('🔗 Configurando listener de URLs...');
+
+    const cleanup = store.listen((changes) => {
+      changes.added.forEach(record => {
+        if (record.typeName === 'shape' && record.type === 'bookmark') {
+          handleURLDetected(record);
+        }
+      });
+    }, { source: 'user', scope: 'document' });
+
+    return () => {
+      addDebugInfo('🧹 URL listener cleanup');
+      cleanup();
+    };
+  }, [isReady, store]);
+
+  // Función para verificar y procesar URLs
+  const handleURLDetected = async (shape) => {
+    const url = shape.props.url;
+    
+    const isInstagram = url.includes('instagram.com') || url.includes('instagr.am');
+    const isTiktok = url.includes('tiktok.com') || url.includes('vm.tiktok.com');
+    
+    if (isInstagram || isTiktok) {
+      addDebugInfo('🔗 URL detectada', { 
+        url, 
+        shapeId: shape.id, 
+        platform: isInstagram ? 'instagram' : 'tiktok' 
+      });
+      
+      try {
+        addDebugInfo('📤 Enviando a edge function...');
+
+        const { data, error } = await supabase.functions.invoke('process-social-url', {
+          body: {
+            url: url,
+            shapeId: shape.id,
+            platform: isInstagram ? 'instagram' : 'tiktok'
+          }
+        });
+
+        if (error) {
+          addDebugInfo('❌ Error en edge function', error);
+          return;
+        }
+
+        addDebugInfo('✅ Edge function exitosa', data);
+        
+        if (data.thumbnail) {
+          editorRef.current.updateShape({
+            id: shape.id,
+            props: {
+              image: data.thumbnail,
+              title: data.title || shape.props.title
+            }
+          });
+          
+          addDebugInfo('✅ Thumbnail actualizado', { shapeId: shape.id });
+        }
+
+      } catch (error) {
+        addDebugInfo('❌ Error procesando URL', error);
+      }
+    } else {
+      addDebugInfo('ℹ️ URL no es Instagram/TikTok', { url });
+    }
+  };
+
+  // Función de carga simplificada - SOLO shapes
   const loadUserData = useCallback(async () => {
     try {
-      addDebugInfo('📥 Cargando desde Supabase...');
+      addDebugInfo('📥 Cargando datos selectivos desde Supabase...');
       
       const { data, error } = await supabase
         .from('canvas_states')
@@ -184,8 +314,10 @@ export default function Canvas({ session }) {
       }
 
       if (data?.data) {
-        addDebugInfo('📊 Datos encontrados', {
-          shapes: Object.keys(data.data.store || {}).filter(k => k.startsWith('shape:')).length
+        addDebugInfo('📊 Datos encontrados (selectivos)', {
+          shapes: Object.keys(data.data.shapes || {}).length,
+          assets: Object.keys(data.data.assets || {}).length,
+          metadata: data.data.metadata
         });
         return data.data;
       }
@@ -197,44 +329,44 @@ export default function Canvas({ session }) {
     }
   }, [session.user.id, addDebugInfo]);
 
-  // ✅ onMount SIMPLIFICADO - solo cargar y configurar
+  // onMount SIMPLIFICADO - carga selectiva
   const handleMount = useCallback(async (editor) => {
     editorRef.current = editor;
     addDebugInfo('🚀 Editor montado');
 
     try {
-      // Configurar preferencias
+      // Configurar preferencias (DESPUÉS de cargar datos)
       const prefs = editor.user.getUserPreferences();
       if (prefs.colorScheme === 'system') {
         editor.user.updateUserPreferences({ colorScheme: 'dark' });
         addDebugInfo('🌙 Dark mode activado');
       }
 
-      // Cargar datos PRIMERO
+      // ✅ CARGAR SOLO SHAPES (sin tocar configuraciones del sistema)
       const userData = await loadUserData();
       if (userData) {
-        store.loadSnapshot(userData);
-        addDebugInfo('✅ Datos cargados en store');
+        loadUserShapes(userData); // ✅ Carga selectiva
+        addDebugInfo('✅ Shapes cargados selectivamente');
       }
 
-      // ✅ DESPUÉS activar grid (para que no se sobrescriba)
+      // Activar grid DESPUÉS (no se sobrescribe porque no cargamos snapshot completo)
       editor.updateInstanceState({ isGridMode: true });
-      addDebugInfo('📐 Grid activado (después de cargar datos)');
+      addDebugInfo('📐 Grid activado (sistema intacto)');
 
       setLoading(false);
-      addDebugInfo('✅ Carga completada');
+      addDebugInfo('✅ Carga completada - sistema funcional');
 
-      // ✅ CRÍTICO: Habilitar auto-save después de un delay
+      // Habilitar auto-save
       setTimeout(() => {
         setIsReady(true);
-        addDebugInfo('🟢 Auto-save HABILITADO');
-      }, 2000); // 2 segundos de delay
+        addDebugInfo('🟢 Auto-save HABILITADO (selectivo)');
+      }, 2000);
 
     } catch (error) {
       addDebugInfo('❌ Error en mount', error);
       setLoading(false);
     }
-  }, [loadUserData, store, addDebugInfo]);
+  }, [loadUserData, addDebugInfo]);
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
@@ -254,50 +386,6 @@ export default function Canvas({ session }) {
       }}>
         <button 
           onClick={() => {
-            // Test: crear un store "normal" y ver qué diferencias hay
-            const normalStore = createTLStore();
-            const normalSnapshot = normalStore.getSnapshot();
-            
-            addDebugInfo('🔍 Store NORMAL vs ACTUAL', {
-              normal: {
-                totalRecords: Object.keys(normalSnapshot.store).length,
-                recordTypes: [...new Set(Object.values(normalSnapshot.store).map(v => v.typeName))],
-                hasCameraRecords: Object.keys(normalSnapshot.store).some(k => k.startsWith('camera:')),
-                hasInstanceRecords: Object.keys(normalSnapshot.store).some(k => k.startsWith('instance:'))
-              },
-              actual: {
-                totalRecords: Object.keys(store.getSnapshot().store).length,
-                recordTypes: [...new Set(Object.values(store.getSnapshot().store).map(v => v.typeName))],
-                hasCameraRecords: Object.keys(store.getSnapshot().store).some(k => k.startsWith('camera:')),
-                hasInstanceRecords: Object.keys(store.getSnapshot().store).some(k => k.startsWith('instance:'))
-              }
-            });
-          }}
-          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
-        >
-          🔍 Compare
-        </button>
-
-        <button 
-          onClick={() => {
-            if (editorRef.current) {
-              const currentInstance = editorRef.current.getInstanceState();
-              addDebugInfo('🔍 Instance ACTUAL', {
-                isGridMode: currentInstance.isGridMode,
-                id: currentInstance.id,
-                hasCamera: !!currentInstance.cameraState,
-                keys: Object.keys(currentInstance),
-                cameraState: currentInstance.cameraState
-              });
-            }
-          }}
-          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
-        >
-          🔍 Instance
-        </button>
-
-        <button 
-          onClick={() => {
             addDebugInfo('🧪 Estado actual', {
               loading,
               isReady,
@@ -308,48 +396,35 @@ export default function Canvas({ session }) {
         >
           🧪 Estado
         </button>
-        
-        <button 
-          onClick={() => {
-            setIsReady(prev => {
-              const newState = !prev;
-              addDebugInfo(`🔄 Auto-save ${newState ? 'ENABLED' : 'DISABLED'}`);
-              return newState;
-            });
-          }}
-          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: isReady ? '#22c55e' : '#ef4444' }}
-        >
-          {isReady ? '🟢' : '🔴'} AutoSave
-        </button>
 
         <button 
-          onClick={async () => {
-            try {
-              const { data } = await supabase
-                .from('canvas_states')
-                .select('id, user_id, updated_at')
-                .eq('user_id', session.user.id);
+          onClick={() => {
+            // Test de funcionalidad básica
+            if (editorRef.current) {
+              const camera = editorRef.current.getCamera();
+              const canPaste = true; // Esto debería funcionar ahora
               
-              addDebugInfo('🗃️ Estado DB', { 
-                records: data?.length || 0,
-                lastUpdate: data?.[0]?.updated_at
+              addDebugInfo('🔍 Test funcionalidad', {
+                camera: {
+                  isLocked: camera.isLocked,
+                  canPanZoom: !camera.isLocked
+                },
+                canPaste: canPaste,
+                shapeCount: editorRef.current.getCurrentPageShapes().length
               });
-            } catch (err) {
-              addDebugInfo('❌ Error DB', err);
             }
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
         >
-          🗃️ DB
+          🔍 Funciones
         </button>
-
+        
         <button 
           onClick={() => {
-            // Test manual de detección de URLs
+            // Test manual de URLs
             const testURLs = [
               'https://www.instagram.com/p/test123/',
-              'https://www.tiktok.com/@user/video/123456',
-              'https://google.com'
+              'https://www.tiktok.com/@user/video/123456'
             ];
             
             testURLs.forEach((url, index) => {
@@ -365,6 +440,30 @@ export default function Canvas({ session }) {
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: '#3b82f6' }}
         >
           🧪 Test URLs
+        </button>
+
+        <button 
+          onClick={async () => {
+            try {
+              const { data } = await supabase
+                .from('canvas_states')
+                .select('id, user_id, updated_at, data')
+                .eq('user_id', session.user.id);
+              
+              const savedData = data?.[0]?.data;
+              addDebugInfo('🗃️ Estado DB (selectivo)', { 
+                records: data?.length || 0,
+                shapesInDB: Object.keys(savedData?.shapes || {}).length,
+                assetsInDB: Object.keys(savedData?.assets || {}).length,
+                lastUpdate: data?.[0]?.updated_at
+              });
+            } catch (err) {
+              addDebugInfo('❌ Error DB', err);
+            }
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+        >
+          🗃️ DB
         </button>
       </div>
 
@@ -393,7 +492,7 @@ export default function Canvas({ session }) {
           color: isReady ? '#22c55e' : '#ef4444',
           fontWeight: 'bold'
         }}>
-          AutoSave: {isReady ? '🟢 ENABLED' : '🔴 DISABLED'}
+          AutoSave: {isReady ? '🟢 ENABLED (selectivo)' : '🔴 DISABLED'}
         </div>
         {debugInfo.slice(-10).reverse().map((info, index) => (
           <div key={index} style={{ 

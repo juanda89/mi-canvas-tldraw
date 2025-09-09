@@ -1,4 +1,4 @@
-import { Tldraw, DefaultMainMenu, TldrawUiMenuItem } from '@tldraw/tldraw'
+import { Tldraw, DefaultMainMenu, TldrawUiMenuItem, createTLStore } from '@tldraw/tldraw'
 import '@tldraw/tldraw/tldraw.css'
 import { supabase } from './supabaseClient'
 import { useState, useRef, useCallback } from 'react'
@@ -30,8 +30,22 @@ export default function Canvas({ session }) {
   const hasLoadedData = useRef(false);
   const editorRef = useRef(null);
   const isFirstLoad = useRef(true);
+  
+  // ✅ SOLUCIÓN: Crear store limpio sin persistenceKey
+  const [store] = useState(() => {
+    const cleanStore = createTLStore();
+    // Limpiar cualquier persistencia local que pueda interferir
+    try {
+      localStorage.removeItem(`tldraw_store_user-${session.user.id}`);
+      localStorage.removeItem(`tldraw_document_user-${session.user.id}`);
+      localStorage.removeItem(`tldraw_state_user-${session.user.id}`);
+    } catch (e) {
+      console.warn('Could not clear localStorage:', e);
+    }
+    return cleanStore;
+  });
 
-  // Función de debug para trackear todo lo que pasa
+  // Función de debug
   const addDebugInfo = useCallback((message, data = null) => {
     const timestamp = new Date().toLocaleTimeString();
     const debugEntry = {
@@ -41,32 +55,8 @@ export default function Canvas({ session }) {
     };
     
     console.log(`🐛 [${timestamp}] ${message}`, data || '');
-    setDebugInfo(prev => [...prev, debugEntry]);
+    setDebugInfo(prev => [...prev.slice(-20), debugEntry]); // Keep last 20 entries
   }, []);
-
-  // Función para verificar estado de Supabase
-  const checkSupabaseConnection = useCallback(async () => {
-    try {
-      addDebugInfo('🔍 Verificando conexión a Supabase...');
-      
-      // Test de conexión básica
-      const { data, error } = await supabase
-        .from('canvas_states')
-        .select('count', { count: 'exact', head: true })
-        .eq('user_id', session.user.id);
-
-      if (error) {
-        addDebugInfo('❌ Error de conexión a Supabase', error);
-        return false;
-      }
-
-      addDebugInfo('✅ Conexión a Supabase OK', { count: data });
-      return true;
-    } catch (error) {
-      addDebugInfo('❌ Error inesperado en Supabase', error);
-      return false;
-    }
-  }, [session.user.id, addDebugInfo]);
 
   // Función para cargar datos del usuario
   const loadUserData = useCallback(async (editor) => {
@@ -76,16 +66,8 @@ export default function Canvas({ session }) {
     }
     
     try {
-      addDebugInfo('📥 Iniciando carga de datos del usuario...');
+      addDebugInfo('📥 Iniciando carga de datos de Supabase...');
       
-      // Verificar conexión primero
-      const isConnected = await checkSupabaseConnection();
-      if (!isConnected) {
-        addDebugInfo('❌ No se pudo conectar a Supabase');
-        setLoading(false);
-        return;
-      }
-
       const { data, error } = await supabase
         .from('canvas_states')
         .select('*')
@@ -94,7 +76,7 @@ export default function Canvas({ session }) {
 
       if (error) {
         if (error.code === 'PGRST116') {
-          addDebugInfo('ℹ️ No hay datos guardados (primera vez)', error);
+          addDebugInfo('ℹ️ Usuario nuevo - No hay datos guardados');
         } else {
           addDebugInfo('❌ Error cargando datos', error);
         }
@@ -104,22 +86,28 @@ export default function Canvas({ session }) {
       }
 
       if (data && data.data) {
-        addDebugInfo('📊 Datos encontrados, cargando snapshot...', {
+        addDebugInfo('📊 Datos encontrados en Supabase', {
           recordId: data.id,
           dataSize: JSON.stringify(data.data).length,
+          shapesCount: Object.keys(data.data.store || {}).filter(k => k.startsWith('shape:')).length,
           updatedAt: data.updated_at
         });
 
         try {
-          // Validar que el snapshot tenga la estructura correcta
+          // Verificar estructura del snapshot
           if (!data.data.store || !data.data.schema) {
-            addDebugInfo('⚠️ Snapshot inválido, estructura incorrecta', data.data);
+            addDebugInfo('⚠️ Snapshot con estructura inválida', data.data);
           } else {
-            editor.loadSnapshot(data.data);
-            addDebugInfo('✅ Snapshot cargado exitosamente');
+            // ✅ IMPORTANTE: Usar store.loadSnapshot en lugar de editor.loadSnapshot
+            // para evitar conflictos con el persistenceKey
+            store.loadSnapshot(data.data);
+            addDebugInfo('✅ Snapshot cargado desde Supabase', {
+              storeKeys: Object.keys(data.data.store).length,
+              hasSchema: !!data.data.schema
+            });
           }
         } catch (snapshotError) {
-          addDebugInfo('❌ Error al cargar snapshot', snapshotError);
+          addDebugInfo('❌ Error aplicando snapshot', snapshotError);
         }
       } else {
         addDebugInfo('ℹ️ No hay datos para cargar');
@@ -130,39 +118,46 @@ export default function Canvas({ session }) {
       addDebugInfo('❌ Error inesperado cargando datos', error);
     } finally {
       setLoading(false);
-      addDebugInfo('🏁 Carga completada');
+      addDebugInfo('🏁 Proceso de carga completado');
     }
-  }, [session.user.id, addDebugInfo, checkSupabaseConnection]);
+  }, [session.user.id, addDebugInfo, store]);
 
   // Función para guardar datos
   const saveUserData = useCallback(async (editor) => {
     if (!hasLoadedData.current) {
-      addDebugInfo('⏭️ Datos no cargados aún, no guardando...');
+      addDebugInfo('⏭️ No guardando - datos aún no cargados');
+      return;
+    }
+
+    if (isFirstLoad.current) {
+      addDebugInfo('⏭️ No guardando - aún en primera carga');
       return;
     }
 
     if (saveTimeout.current) {
       clearTimeout(saveTimeout.current);
-      addDebugInfo('⏰ Cancelando guardado anterior...');
+      addDebugInfo('⏰ Cancelando guardado previo...');
     }
 
     saveTimeout.current = setTimeout(async () => {
       try {
-        addDebugInfo('💾 Iniciando guardado...');
+        addDebugInfo('💾 Iniciando guardado automático...');
         
-        const snapshot = editor.getSnapshot();
+        // ✅ Obtener snapshot del store directamente
+        const snapshot = store.getSnapshot();
         
-        // Validar snapshot antes de guardar
         if (!snapshot || !snapshot.store) {
-          addDebugInfo('❌ Snapshot inválido, no guardando', snapshot);
+          addDebugInfo('❌ Snapshot inválido - cancelando guardado', snapshot);
           return;
         }
 
+        const shapesCount = Object.keys(snapshot.store).filter(k => k.startsWith('shape:')).length;
         const dataSize = JSON.stringify(snapshot).length;
-        addDebugInfo('📊 Preparando datos para guardar', {
+        
+        addDebugInfo('📊 Guardando snapshot', {
+          shapesCount,
           dataSize,
-          storeKeys: Object.keys(snapshot.store || {}),
-          hasSchema: !!snapshot.schema
+          storeKeys: Object.keys(snapshot.store).length
         });
 
         const { data, error } = await supabase
@@ -177,145 +172,186 @@ export default function Canvas({ session }) {
         if (error) {
           addDebugInfo('❌ Error guardando en Supabase', error);
         } else {
-          addDebugInfo('✅ Datos guardados exitosamente', {
+          addDebugInfo('✅ Guardado exitoso en Supabase', {
             recordId: data[0]?.id,
+            shapesCount,
             dataSize
           });
         }
       } catch (error) {
-        addDebugInfo('❌ Error inesperado guardando', error);
+        addDebugInfo('❌ Error inesperado en guardado', error);
       }
     }, 1000);
-  }, [session.user.id, addDebugInfo]);
+  }, [session.user.id, addDebugInfo, store]);
 
   // Función que se ejecuta cuando el editor está listo
   const handleMount = useCallback(async (editor) => {
     editorRef.current = editor;
     
-    addDebugInfo('🚀 Editor montado', {
+    addDebugInfo('🚀 Editor montado correctamente', {
       userId: session.user.id,
-      isFirstLoad: isFirstLoad.current
+      storeId: store.id
     });
 
     // Configurar preferencias iniciales
     try {
       const currentPrefs = editor.user.getUserPreferences();
-      addDebugInfo('👤 Preferencias actuales', currentPrefs);
+      addDebugInfo('👤 Preferencias del usuario', currentPrefs);
       
-      // Solo aplicar dark mode si no tiene preferencia configurada
+      // Solo aplicar dark mode si no está configurado
       if (currentPrefs.colorScheme === 'system') {
         editor.user.updateUserPreferences({ 
           colorScheme: 'dark' 
         });
-        addDebugInfo('🌙 Dark mode aplicado');
+        addDebugInfo('🌙 Dark mode aplicado por defecto');
       }
       
-      // Siempre activar grid al iniciar
+      // Activar grid siempre
       editor.updateInstanceState({ 
         isGridMode: true 
       });
-      addDebugInfo('📐 Grid activado');
+      addDebugInfo('📐 Grid activado por defecto');
 
     } catch (error) {
-      addDebugInfo('❌ Error configurando preferencias', error);
+      addDebugInfo('❌ Error configurando preferencias iniciales', error);
     }
 
-    // Cargar datos del usuario
+    // ✅ CRÍTICO: Cargar datos ANTES de configurar el listener
     await loadUserData(editor);
 
-    // Configurar listener DESPUÉS de cargar los datos
+    // Configurar listener para cambios DESPUÉS de cargar
     let changeCount = 0;
-    const cleanup = editor.store.listen(() => {
+    const cleanup = store.listen(() => {
       changeCount++;
-      addDebugInfo(`🔄 Cambio detectado #${changeCount}`, {
-        loading,
-        hasLoadedData: hasLoadedData.current,
-        isFirstLoad: isFirstLoad.current
-      });
+      addDebugInfo(`🔄 Cambio detectado en store #${changeCount}`);
 
-      // Solo guardar si ya terminamos de cargar y no es la primera carga
-      if (!loading && hasLoadedData.current && !isFirstLoad.current) {
-        addDebugInfo('💾 Triggering save...');
+      // Solo guardar después de la carga inicial
+      if (hasLoadedData.current && !isFirstLoad.current) {
         saveUserData(editor);
-      } else {
-        addDebugInfo('⏭️ No guardando porque:', {
-          loading,
-          hasLoadedData: hasLoadedData.current,
-          isFirstLoad: isFirstLoad.current
-        });
       }
     }, { source: 'user', scope: 'document' });
 
-    // Marcar que ya no es la primera carga después de un delay
+    // Habilitar guardado automático después de un delay
     setTimeout(() => {
       isFirstLoad.current = false;
-      addDebugInfo('✅ Primera carga completada, guardado automático habilitado');
-    }, 2000);
+      addDebugInfo('✅ Guardado automático habilitado');
+    }, 3000); // Más tiempo para asegurar que todo esté listo
 
-    addDebugInfo('👂 Listener configurado');
+    addDebugInfo('👂 Store listener configurado');
 
-    // Cleanup cuando el componente se desmonte
     return () => {
-      addDebugInfo('🧹 Cleanup ejecutado');
+      addDebugInfo('🧹 Limpieza del componente');
       cleanup();
       if (saveTimeout.current) {
         clearTimeout(saveTimeout.current);
       }
     };
-  }, [loadUserData, saveUserData, loading, session.user.id, addDebugInfo]);
+  }, [loadUserData, saveUserData, session.user.id, addDebugInfo, store]);
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
       <Tldraw
-        persistenceKey={`user-${session.user.id}`}
+        store={store}  // ✅ Usar store personalizado
+        // ❌ NO usar persistenceKey para evitar conflictos
         onMount={handleMount}
         overrides={uiOverrides}
         inferDarkMode
       />
       
-      {/* Panel de Debug */}
+      {/* Botones de test */}
       <div style={{
         position: 'absolute',
         top: '10px',
+        left: '10px',
+        zIndex: 1002
+      }}>
+        <button 
+          onClick={async () => {
+            if (!editorRef.current) return;
+            const snapshot = store.getSnapshot();
+            const shapesCount = Object.keys(snapshot.store || {}).filter(k => k.startsWith('shape:')).length;
+            addDebugInfo('🧪 Snapshot actual', {
+              hasStore: !!snapshot?.store,
+              hasSchema: !!snapshot?.schema,
+              shapesCount,
+              storeSize: Object.keys(snapshot?.store || {}).length
+            });
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+        >
+          📊 Ver Snapshot
+        </button>
+        
+        <button 
+          onClick={async () => {
+            try {
+              const { data, error } = await supabase
+                .from('canvas_states')
+                .select('id, user_id, data, updated_at')
+                .eq('user_id', session.user.id);
+              
+              const shapesInDB = data?.[0]?.data?.store ? 
+                Object.keys(data[0].data.store).filter(k => k.startsWith('shape:')).length : 0;
+                
+              addDebugInfo('🗃️ Estado en Supabase', { 
+                recordsFound: data?.length || 0,
+                shapesInDB,
+                lastUpdate: data?.[0]?.updated_at,
+                error 
+              });
+            } catch (err) {
+              addDebugInfo('❌ Error consultando Supabase', err);
+            }
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+        >
+          🗃️ Ver DB
+        </button>
+      </div>
+
+      {/* Panel de Debug compacto */}
+      <div style={{
+        position: 'absolute',
+        top: '40px',
         right: '10px',
-        width: '300px',
-        maxHeight: '400px',
-        backgroundColor: 'rgba(0, 0, 0, 0.9)',
+        width: '320px',
+        maxHeight: '300px',
+        backgroundColor: 'rgba(0, 0, 0, 0.95)',
         color: 'white',
-        padding: '10px',
-        borderRadius: '8px',
-        fontSize: '12px',
+        padding: '8px',
+        borderRadius: '6px',
+        fontSize: '11px',
         overflow: 'auto',
         zIndex: 1001,
         fontFamily: 'monospace'
       }}>
-        <div style={{ fontWeight: 'bold', marginBottom: '10px' }}>
-          🐛 Debug Info ({debugInfo.length})
+        <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
+          🐛 Debug ({debugInfo.length}) - {loading ? '⏳ Loading' : '✅ Ready'}
         </div>
-        <div style={{ marginBottom: '10px' }}>
-          Status: {loading ? '⏳ Loading' : '✅ Ready'}
-        </div>
-        {debugInfo.slice(-10).reverse().map((info, index) => (
+        {debugInfo.slice(-8).reverse().map((info, index) => (
           <div key={index} style={{ 
-            marginBottom: '5px', 
-            borderBottom: '1px solid #333',
-            paddingBottom: '5px'
+            marginBottom: '4px', 
+            borderBottom: '1px solid #222',
+            paddingBottom: '3px',
+            fontSize: '10px'
           }}>
-            <div style={{ fontWeight: 'bold' }}>
+            <div style={{ color: '#4ade80' }}>
               [{info.time}] {info.message}
             </div>
             {info.data && (
-              <pre style={{ 
-                whiteSpace: 'pre-wrap', 
-                fontSize: '10px',
-                maxHeight: '100px',
+              <div style={{ 
+                backgroundColor: '#111',
+                padding: '3px',
+                marginTop: '2px',
+                borderRadius: '2px',
+                maxHeight: '60px',
                 overflow: 'auto',
-                backgroundColor: '#222',
-                padding: '5px',
-                marginTop: '5px'
+                whiteSpace: 'pre-wrap',
+                fontSize: '9px',
+                color: '#94a3b8'
               }}>
-                {info.data}
-              </pre>
+                {info.data.substring(0, 200)}{info.data.length > 200 ? '...' : ''}
+              </div>
             )}
           </div>
         ))}
@@ -335,7 +371,10 @@ export default function Canvas({ session }) {
           color: 'white',
           zIndex: 1000
         }}>
-          Cargando canvas...
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '18px', marginBottom: '10px' }}>🎨</div>
+            <div>Cargando canvas desde Supabase...</div>
+          </div>
         </div>
       )}
     </div>

@@ -31,10 +31,9 @@ export default function Canvas({ session }) {
   const editorRef = useRef(null);
   const isFirstLoad = useRef(true);
   
-  // ✅ SOLUCIÓN: Crear store limpio sin persistenceKey
+  // Crear store limpio
   const [store] = useState(() => {
     const cleanStore = createTLStore();
-    // Limpiar cualquier persistencia local que pueda interferir
     try {
       localStorage.removeItem(`tldraw_store_user-${session.user.id}`);
       localStorage.removeItem(`tldraw_document_user-${session.user.id}`);
@@ -55,18 +54,90 @@ export default function Canvas({ session }) {
     };
     
     console.log(`🐛 [${timestamp}] ${message}`, data || '');
-    setDebugInfo(prev => [...prev.slice(-20), debugEntry]); // Keep last 20 entries
+    setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
   }, []);
 
-  // Función para cargar datos del usuario
+  // ✅ FIX: Guardar usando UPDATE/INSERT en lugar de upsert problemático
+  const saveUserData = useCallback(async (editor) => {
+    if (!hasLoadedData.current || isFirstLoad.current) {
+      addDebugInfo('⏭️ No guardando - condiciones no cumplidas', {
+        hasLoadedData: hasLoadedData.current,
+        isFirstLoad: isFirstLoad.current,
+        loading
+      });
+      return;
+    }
+
+    if (saveTimeout.current) {
+      clearTimeout(saveTimeout.current);
+    }
+
+    saveTimeout.current = setTimeout(async () => {
+      try {
+        addDebugInfo('💾 Iniciando guardado...');
+        
+        const snapshot = store.getSnapshot();
+        
+        if (!snapshot || !snapshot.store) {
+          addDebugInfo('❌ Snapshot inválido', snapshot);
+          return;
+        }
+
+        const shapesCount = Object.keys(snapshot.store).filter(k => k.startsWith('shape:')).length;
+        const dataSize = JSON.stringify(snapshot).length;
+        
+        addDebugInfo('📊 Preparando guardado', { shapesCount, dataSize });
+
+        // ✅ SOLUCIÓN: Primero intentar UPDATE, si falla hacer INSERT
+        const { error: updateError } = await supabase
+          .from('canvas_states')
+          .update({ 
+            data: snapshot, 
+            updated_at: new Date().toISOString() 
+          })
+          .eq('user_id', session.user.id);
+
+        if (updateError) {
+          addDebugInfo('ℹ️ Update falló, intentando insert...', updateError);
+          
+          // Si UPDATE falla (no existe), hacer INSERT
+          const { data, error: insertError } = await supabase
+            .from('canvas_states')
+            .insert({ 
+              user_id: session.user.id, 
+              data: snapshot, 
+              updated_at: new Date().toISOString() 
+            })
+            .select();
+
+          if (insertError) {
+            addDebugInfo('❌ Error en INSERT', insertError);
+          } else {
+            addDebugInfo('✅ Datos insertados exitosamente', {
+              recordId: data[0]?.id,
+              shapesCount
+            });
+          }
+        } else {
+          addDebugInfo('✅ Datos actualizados exitosamente', { shapesCount });
+        }
+
+      } catch (error) {
+        addDebugInfo('❌ Error inesperado guardando', error);
+      }
+    }, 1000);
+  }, [session.user.id, addDebugInfo, store, loading]);
+
+  // ✅ FIX: Asegurar que setLoading(false) SIEMPRE se ejecute
   const loadUserData = useCallback(async (editor) => {
     if (hasLoadedData.current) {
-      addDebugInfo('⏭️ Datos ya cargados, skipping...');
+      addDebugInfo('⏭️ Datos ya cargados');
+      setLoading(false); // ✅ Asegurar que se ponga en false
       return;
     }
     
     try {
-      addDebugInfo('📥 Iniciando carga de datos de Supabase...');
+      addDebugInfo('📥 Cargando datos de Supabase...');
       
       const { data, error } = await supabase
         .from('canvas_states')
@@ -76,189 +147,115 @@ export default function Canvas({ session }) {
 
       if (error) {
         if (error.code === 'PGRST116') {
-          addDebugInfo('ℹ️ Usuario nuevo - No hay datos guardados');
+          addDebugInfo('ℹ️ Usuario nuevo - sin datos previos');
         } else {
-          addDebugInfo('❌ Error cargando datos', error);
+          addDebugInfo('❌ Error cargando', error);
         }
-        hasLoadedData.current = true;
-        setLoading(false);
-        return;
-      }
-
-      if (data && data.data) {
-        addDebugInfo('📊 Datos encontrados en Supabase', {
+      } else if (data && data.data) {
+        addDebugInfo('📊 Datos encontrados', {
           recordId: data.id,
-          dataSize: JSON.stringify(data.data).length,
           shapesCount: Object.keys(data.data.store || {}).filter(k => k.startsWith('shape:')).length,
-          updatedAt: data.updated_at
+          dataSize: JSON.stringify(data.data).length
         });
 
         try {
-          // Verificar estructura del snapshot
-          if (!data.data.store || !data.data.schema) {
-            addDebugInfo('⚠️ Snapshot con estructura inválida', data.data);
-          } else {
-            // ✅ IMPORTANTE: Usar store.loadSnapshot en lugar de editor.loadSnapshot
-            // para evitar conflictos con el persistenceKey
+          if (data.data.store && data.data.schema) {
             store.loadSnapshot(data.data);
-            addDebugInfo('✅ Snapshot cargado desde Supabase', {
-              storeKeys: Object.keys(data.data.store).length,
-              hasSchema: !!data.data.schema
-            });
+            addDebugInfo('✅ Snapshot cargado correctamente');
+          } else {
+            addDebugInfo('⚠️ Snapshot con estructura inválida');
           }
         } catch (snapshotError) {
           addDebugInfo('❌ Error aplicando snapshot', snapshotError);
         }
-      } else {
-        addDebugInfo('ℹ️ No hay datos para cargar');
       }
       
       hasLoadedData.current = true;
+      
     } catch (error) {
-      addDebugInfo('❌ Error inesperado cargando datos', error);
+      addDebugInfo('❌ Error inesperado', error);
     } finally {
+      // ✅ CRÍTICO: SIEMPRE poner loading en false
       setLoading(false);
-      addDebugInfo('🏁 Proceso de carga completado');
+      addDebugInfo('✅ Loading completado - estado ready');
     }
   }, [session.user.id, addDebugInfo, store]);
 
-  // Función para guardar datos
-  const saveUserData = useCallback(async (editor) => {
-    if (!hasLoadedData.current) {
-      addDebugInfo('⏭️ No guardando - datos aún no cargados');
-      return;
-    }
-
-    if (isFirstLoad.current) {
-      addDebugInfo('⏭️ No guardando - aún en primera carga');
-      return;
-    }
-
-    if (saveTimeout.current) {
-      clearTimeout(saveTimeout.current);
-      addDebugInfo('⏰ Cancelando guardado previo...');
-    }
-
-    saveTimeout.current = setTimeout(async () => {
-      try {
-        addDebugInfo('💾 Iniciando guardado automático...');
-        
-        // ✅ Obtener snapshot del store directamente
-        const snapshot = store.getSnapshot();
-        
-        if (!snapshot || !snapshot.store) {
-          addDebugInfo('❌ Snapshot inválido - cancelando guardado', snapshot);
-          return;
-        }
-
-        const shapesCount = Object.keys(snapshot.store).filter(k => k.startsWith('shape:')).length;
-        const dataSize = JSON.stringify(snapshot).length;
-        
-        addDebugInfo('📊 Guardando snapshot', {
-          shapesCount,
-          dataSize,
-          storeKeys: Object.keys(snapshot.store).length
-        });
-
-        const { data, error } = await supabase
-          .from('canvas_states')
-          .upsert({ 
-            user_id: session.user.id, 
-            data: snapshot, 
-            updated_at: new Date().toISOString() 
-          })
-          .select();
-
-        if (error) {
-          addDebugInfo('❌ Error guardando en Supabase', error);
-        } else {
-          addDebugInfo('✅ Guardado exitoso en Supabase', {
-            recordId: data[0]?.id,
-            shapesCount,
-            dataSize
-          });
-        }
-      } catch (error) {
-        addDebugInfo('❌ Error inesperado en guardado', error);
-      }
-    }, 1000);
-  }, [session.user.id, addDebugInfo, store]);
-
-  // Función que se ejecuta cuando el editor está listo
+  // Función onMount
   const handleMount = useCallback(async (editor) => {
     editorRef.current = editor;
     
-    addDebugInfo('🚀 Editor montado correctamente', {
-      userId: session.user.id,
-      storeId: store.id
-    });
+    addDebugInfo('🚀 Editor montado', { userId: session.user.id });
 
-    // Configurar preferencias iniciales
+    // Configurar preferencias
     try {
       const currentPrefs = editor.user.getUserPreferences();
-      addDebugInfo('👤 Preferencias del usuario', currentPrefs);
       
-      // Solo aplicar dark mode si no está configurado
       if (currentPrefs.colorScheme === 'system') {
-        editor.user.updateUserPreferences({ 
-          colorScheme: 'dark' 
-        });
-        addDebugInfo('🌙 Dark mode aplicado por defecto');
+        editor.user.updateUserPreferences({ colorScheme: 'dark' });
+        addDebugInfo('🌙 Dark mode aplicado');
       }
       
-      // Activar grid siempre
-      editor.updateInstanceState({ 
-        isGridMode: true 
-      });
-      addDebugInfo('📐 Grid activado por defecto');
+      editor.updateInstanceState({ isGridMode: true });
+      addDebugInfo('📐 Grid activado');
 
     } catch (error) {
-      addDebugInfo('❌ Error configurando preferencias iniciales', error);
+      addDebugInfo('❌ Error configurando preferencias', error);
     }
 
-    // ✅ CRÍTICO: Cargar datos ANTES de configurar el listener
+    // ✅ CARGAR datos primero
     await loadUserData(editor);
 
-    // Configurar listener para cambios DESPUÉS de cargar
+    // ✅ DESPUÉS configurar listener  
     let changeCount = 0;
     const cleanup = store.listen(() => {
       changeCount++;
-      addDebugInfo(`🔄 Cambio detectado en store #${changeCount}`);
+      addDebugInfo(`🔄 Cambio #${changeCount}`, {
+        loading,
+        hasLoadedData: hasLoadedData.current,
+        isFirstLoad: isFirstLoad.current
+      });
 
-      // Solo guardar después de la carga inicial
-      if (hasLoadedData.current && !isFirstLoad.current) {
+      // Condiciones para guardar
+      if (!loading && hasLoadedData.current && !isFirstLoad.current) {
+        addDebugInfo('💾 Guardando automáticamente...');
         saveUserData(editor);
+      } else {
+        addDebugInfo('⏭️ No guardando', {
+          loading,
+          hasLoadedData: hasLoadedData.current,
+          isFirstLoad: isFirstLoad.current
+        });
       }
     }, { source: 'user', scope: 'document' });
 
-    // Habilitar guardado automático después de un delay
+    // ✅ Habilitar guardado después de delay
     setTimeout(() => {
       isFirstLoad.current = false;
       addDebugInfo('✅ Guardado automático habilitado');
-    }, 3000); // Más tiempo para asegurar que todo esté listo
+    }, 2000);
 
     addDebugInfo('👂 Store listener configurado');
 
     return () => {
-      addDebugInfo('🧹 Limpieza del componente');
+      addDebugInfo('🧹 Cleanup');
       cleanup();
       if (saveTimeout.current) {
         clearTimeout(saveTimeout.current);
       }
     };
-  }, [loadUserData, saveUserData, session.user.id, addDebugInfo, store]);
+  }, [loadUserData, saveUserData, session.user.id, addDebugInfo, store, loading]);
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
       <Tldraw
-        store={store}  // ✅ Usar store personalizado
-        // ❌ NO usar persistenceKey para evitar conflictos
+        store={store}
         onMount={handleMount}
         overrides={uiOverrides}
         inferDarkMode
       />
       
-      {/* Botones de test */}
+      {/* Test buttons */}
       <div style={{
         position: 'absolute',
         top: '10px',
@@ -266,22 +263,31 @@ export default function Canvas({ session }) {
         zIndex: 1002
       }}>
         <button 
-          onClick={async () => {
-            if (!editorRef.current) return;
-            const snapshot = store.getSnapshot();
-            const shapesCount = Object.keys(snapshot.store || {}).filter(k => k.startsWith('shape:')).length;
-            addDebugInfo('🧪 Snapshot actual', {
-              hasStore: !!snapshot?.store,
-              hasSchema: !!snapshot?.schema,
-              shapesCount,
-              storeSize: Object.keys(snapshot?.store || {}).length
+          onClick={() => {
+            addDebugInfo('🧪 Estado actual', {
+              loading,
+              hasLoadedData: hasLoadedData.current,
+              isFirstLoad: isFirstLoad.current,
+              changesDetected: 'check console'
             });
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
         >
-          📊 Ver Snapshot
+          🧪 Estado
         </button>
         
+        <button 
+          onClick={async () => {
+            if (editorRef.current) {
+              await saveUserData(editorRef.current);
+              addDebugInfo('🧪 Guardado manual triggereado');
+            }
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+        >
+          💾 Guardar
+        </button>
+
         <button 
           onClick={async () => {
             try {
@@ -290,17 +296,13 @@ export default function Canvas({ session }) {
                 .select('id, user_id, data, updated_at')
                 .eq('user_id', session.user.id);
               
-              const shapesInDB = data?.[0]?.data?.store ? 
-                Object.keys(data[0].data.store).filter(k => k.startsWith('shape:')).length : 0;
-                
-              addDebugInfo('🗃️ Estado en Supabase', { 
+              addDebugInfo('🗃️ Estado en DB', { 
                 recordsFound: data?.length || 0,
-                shapesInDB,
-                lastUpdate: data?.[0]?.updated_at,
-                error 
+                error,
+                lastUpdate: data?.[0]?.updated_at
               });
             } catch (err) {
-              addDebugInfo('❌ Error consultando Supabase', err);
+              addDebugInfo('❌ Error consultando DB', err);
             }
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
@@ -309,13 +311,13 @@ export default function Canvas({ session }) {
         </button>
       </div>
 
-      {/* Panel de Debug compacto */}
+      {/* Debug panel */}
       <div style={{
         position: 'absolute',
         top: '40px',
         right: '10px',
         width: '320px',
-        maxHeight: '300px',
+        maxHeight: '350px',
         backgroundColor: 'rgba(0, 0, 0, 0.95)',
         color: 'white',
         padding: '8px',
@@ -326,9 +328,14 @@ export default function Canvas({ session }) {
         fontFamily: 'monospace'
       }}>
         <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
-          🐛 Debug ({debugInfo.length}) - {loading ? '⏳ Loading' : '✅ Ready'}
+          🐛 Debug ({debugInfo.length}) - Status: {loading ? '⏳ Loading' : '✅ Ready'}
         </div>
-        {debugInfo.slice(-8).reverse().map((info, index) => (
+        <div style={{ marginBottom: '8px', fontSize: '10px', color: '#4ade80' }}>
+          Loading: {loading ? 'true' : 'false'} | 
+          LoadedData: {hasLoadedData.current ? 'true' : 'false'} | 
+          FirstLoad: {isFirstLoad.current ? 'true' : 'false'}
+        </div>
+        {debugInfo.slice(-10).reverse().map((info, index) => (
           <div key={index} style={{ 
             marginBottom: '4px', 
             borderBottom: '1px solid #222',
@@ -373,7 +380,7 @@ export default function Canvas({ session }) {
         }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: '18px', marginBottom: '10px' }}>🎨</div>
-            <div>Cargando canvas desde Supabase...</div>
+            <div>Cargando canvas...</div>
           </div>
         </div>
       )}

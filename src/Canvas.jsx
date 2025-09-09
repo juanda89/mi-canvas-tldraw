@@ -139,7 +139,7 @@ export default function Canvas({ session }) {
             return;
           }
 
-          // ✅ EXTRAER SOLO CONTENIDO DEL USUARIO (no configuraciones del sistema)
+          // ✅ EXTRAER SOLO CONTENIO DEL USUARIO (no configuraciones del sistema)
           const userData = extractUserData(snapshot);
           
           addDebugInfo('📊 Datos selectivos extraídos', userData.metadata);

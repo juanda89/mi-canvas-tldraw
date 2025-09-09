@@ -26,7 +26,7 @@ const uiOverrides = {
 export default function Canvas({ session }) {
   const [loading, setLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState([]);
-  const [isReady, setIsReady] = useState(false); // ✅ NUEVO: Estado simple para saber si puede guardar
+  const [isReady, setIsReady] = useState(false); // ✅ NUEVO: Estado ssimple para saber si puede guardar
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
   

@@ -491,7 +491,7 @@ export default function Canvas({ session }) {
         </button>
       </div>
 
-      {/* Debug panel mejorado */}
+      {/* Debug panel mejrado */}
       <div style={{
         position: 'absolute',
         top: '40px',

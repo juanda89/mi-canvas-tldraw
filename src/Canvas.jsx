@@ -228,7 +228,7 @@ export default function Canvas({ session }) {
         }
       }, 2000); // 2 segundos
 
-    }, { source: 'user', scope: 'document' });
+    }, { source: 'user', scope: 'session' }); // ✅ CONSISTENTE: session scope
 
     return () => {
       addDebugInfo('🧹 Auto-save cleanup');

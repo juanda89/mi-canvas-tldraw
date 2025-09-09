@@ -229,77 +229,81 @@ export default function Canvas({ session }) {
     };
   }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
 
-  // ✅ NUEVO: Listener para detectar paste events
+  // ✅ OPTIMIZADO: Listener específico para paste events (con debouncing)
   useEffect(() => {
     if (!isReady || !editorRef.current) return;
 
-    addDebugInfo('📋 Configurando listener de paste...');
+    addDebugInfo('📋 Configurando listener optimizado de paste...');
+
+    let pasteTimeout = null;
+    const pendingPasteData = [];
 
     const cleanup = store.listen((entry) => {
-      // Detectar elementos agregados (incluye paste)
-      entry.changes.added.forEach(record => {
-        addDebugInfo('➕ Elemento agregado detectado', {
-          type: record.typeName,
-          id: record.id,
-          recordType: record.type || 'unknown'
-        });
+      // Solo procesar shapes agregadas que parezcan paste events
+      const potentialPasteShapes = entry.changes.added.filter(record => {
+        return record.typeName === 'shape' && (
+          record.type === 'bookmark' ||  // URLs pegadas
+          (record.type === 'text' && record.props?.text?.length > 10) || // Texto largo pegado
+          record.type === 'image' // Imágenes pegadas
+        );
+      });
 
-        // Detectar diferentes tipos de paste
-        if (record.typeName === 'shape') {
+      if (potentialPasteShapes.length > 0) {
+        // Agregar a pending y usar debouncing
+        potentialPasteShapes.forEach(record => {
           const pasteInfo = {
             type: 'shape',
             shapeType: record.type,
             id: record.id,
-            props: record.props,
             timestamp: new Date().toISOString()
           };
 
-          // Detectar URLs pegadas
+          // Detectar tipo específico
           if (record.type === 'bookmark' && record.props?.url) {
             pasteInfo.url = record.props.url;
             pasteInfo.isURL = true;
             addDebugInfo('🔗 URL pegada detectada', { url: record.props.url });
-          }
-
-          // Detectar texto pegado
-          if (record.type === 'text' && record.props?.text) {
-            pasteInfo.text = record.props.text;
+          } else if (record.type === 'text' && record.props?.text) {
+            pasteInfo.text = record.props.text.substring(0, 100); // Limitar texto
             pasteInfo.isText = true;
-            addDebugInfo('📝 Texto pegado detectado', { text: record.props.text });
-          }
-
-          // Detectar imágenes pegadas
-          if (record.type === 'image' && record.props?.src) {
-            pasteInfo.imageSrc = record.props.src;
+            addDebugInfo('📝 Texto pegado detectado');
+          } else if (record.type === 'image') {
             pasteInfo.isImage = true;
             addDebugInfo('🖼️ Imagen pegada detectada');
           }
 
-          // Enviar al webhook
-          sendToWebhook(pasteInfo);
-        }
+          pendingPasteData.push(pasteInfo);
+        });
 
-        // Detectar assets pegados
-        if (record.typeName === 'asset') {
-          const assetInfo = {
-            type: 'asset',
-            assetType: record.type,
-            id: record.id,
-            props: record.props,
-            timestamp: new Date().toISOString()
-          };
-
-          addDebugInfo('📎 Asset pegado detectado', { assetType: record.type });
-          sendToWebhook(assetInfo);
-        }
-      });
+        // Debouncing: esperar 500ms antes de enviar
+        if (pasteTimeout) clearTimeout(pasteTimeout);
+        
+        pasteTimeout = setTimeout(() => {
+          if (pendingPasteData.length > 0) {
+            // Enviar batch de paste data
+            const batchData = {
+              type: 'paste_batch',
+              items: [...pendingPasteData],
+              count: pendingPasteData.length,
+              timestamp: new Date().toISOString()
+            };
+            
+            addDebugInfo('📤 Enviando batch de paste data', { count: pendingPasteData.length });
+            sendToWebhook(batchData);
+            
+            // Limpiar pending
+            pendingPasteData.length = 0;
+          }
+        }, 500);
+      }
     }, { source: 'user', scope: 'document' });
 
     return () => {
-      addDebugInfo('🧹 Paste listener cleanup');
+      addDebugInfo('🧹 Paste listener optimizado cleanup');
       cleanup();
+      if (pasteTimeout) clearTimeout(pasteTimeout);
     };
-  }, [isReady, store, sendToWebhook, addDebugInfo]);
+  }, [isReady, store]); // ✅ Dependencias reducidas
 
   // Función de carga - solo shapes y assets
   const loadUserData = useCallback(async () => {

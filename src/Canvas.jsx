@@ -27,12 +27,10 @@ export default function Canvas({ session }) {
   const [loading, setLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState([]);
   const [isReady, setIsReady] = useState(false);
-  const [pasteEvents, setPasteEvents] = useState([]);
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
-  const lastSaveTime = useRef(0);
   
-  // Store limpio
+  // Store limpio - NO cargar snapshots completos que corrompan el sistema
   const [store] = useState(() => {
     const cleanStore = createTLStore();
     try {
@@ -58,57 +56,12 @@ export default function Canvas({ session }) {
     setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
   }, []);
 
-  // Función para trackear paste events
-  const addPasteEvent = useCallback((type, data, success = null) => {
-    const pasteEntry = {
-      id: Date.now(),
-      time: new Date().toLocaleTimeString(),
-      type,
-      data,
-      success,
-      timestamp: new Date().toISOString()
-    };
-    
-    setPasteEvents(prev => [...prev.slice(-15), pasteEntry]);
-    addDebugInfo(`📋 Paste Event: ${type}`, data);
-  }, [addDebugInfo]);
-
-  // Función para enviar al webhook
-  const sendToWebhook = useCallback(async (pasteData) => {
-    try {
-      addPasteEvent('📤 sending', pasteData);
-      
-      const response = await fetch('https://n8n-boominbm-u44048.vm.elestio.app/webhook/process-social-url', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          user_id: session.user.id,
-          timestamp: new Date().toISOString(),
-          paste_data: pasteData
-        })
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        addPasteEvent('✅ webhook success', result, true);
-        return result;
-      } else {
-        addPasteEvent('❌ webhook error', { status: response.status }, false);
-        return null;
-      }
-    } catch (error) {
-      addPasteEvent('❌ webhook failed', error.message, false);
-      return null;
-    }
-  }, [session.user.id, addPasteEvent]);
-
-  // Extraer contenido del usuario
+  // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
   const extractUserData = useCallback((snapshot) => {
     const userShapes = {};
     const userAssets = {};
     
+    // Solo extraer shapes (dibujos del usuario) y assets
     Object.entries(snapshot.store).forEach(([key, value]) => {
       if (key.startsWith('shape:') && value.typeName === 'shape') {
         userShapes[key] = value;
@@ -129,87 +82,90 @@ export default function Canvas({ session }) {
     };
   }, []);
 
-  // Cargar shapes
+  // ✅ NUEVO: Cargar solo shapes sin tocar configuraciones del sistema
   const loadUserShapes = useCallback((userData) => {
     if (!userData.shapes || !editorRef.current) return;
 
-    addDebugInfo('📥 Cargando shapes...', {
+    addDebugInfo('📥 Cargando shapes selectivamente...', {
       shapesToLoad: Object.keys(userData.shapes).length,
       assetsToLoad: Object.keys(userData.assets || {}).length
     });
 
     try {
+      // Crear assets primero
       const assetsToCreate = Object.values(userData.assets || {});
       if (assetsToCreate.length > 0) {
         editorRef.current.createAssets(assetsToCreate);
         addDebugInfo('✅ Assets cargados', { count: assetsToCreate.length });
       }
 
+      // Crear shapes
       const shapesToCreate = Object.values(userData.shapes);
       if (shapesToCreate.length > 0) {
         editorRef.current.createShapes(shapesToCreate);
         addDebugInfo('✅ Shapes cargados', { count: shapesToCreate.length });
       }
+
     } catch (error) {
       addDebugInfo('❌ Error cargando shapes', error);
     }
   }, [addDebugInfo]);
 
-  // ✅ NUEVO: Auto-save SOLO para creación/eliminación (NO movimientos)
+  // ✅ Auto-save con persistencia selectiva
   useEffect(() => {
-    if (!isReady) return;
+    if (!isReady) {
+      addDebugInfo('⏭️ AutoSave: No ready yet');
+      return;
+    }
 
-    addDebugInfo('🔄 Auto-save: SOLO creación/eliminación iniciado');
+    addDebugInfo('🔄 Configurando auto-save selectivo...');
 
-    const cleanup = store.listen((entry) => {
-      // ✅ CLAVE: Solo escuchar added/removed, NO updated (evita lag en movimientos)
-      const hasCreation = entry.changes.added.some(record => record.typeName === 'shape');
-      const hasDeletion = entry.changes.removed.some(record => record.typeName === 'shape');
+    let changeCount = 0;
+    const cleanup = store.listen(() => {
+      changeCount++;
+      addDebugInfo(`🔄 Store cambio #${changeCount} - AutoSave selectivo activo`);
 
-      // ✅ IGNORAR completamente updates (movimientos, redimensionar, etc.)
-      if (!hasCreation && !hasDeletion) {
-        return; // No hacer nada si solo son movimientos
+      if (saveTimeout.current) {
+        clearTimeout(saveTimeout.current);
       }
 
-      addDebugInfo(`📝 Shape ${hasCreation ? 'creada' : 'eliminada'} → save en 2s`);
-
-      if (saveTimeout.current) clearTimeout(saveTimeout.current);
-
       saveTimeout.current = setTimeout(async () => {
-        const now = Date.now();
-        
-        if (now - lastSaveTime.current < 3000) {
-          addDebugInfo('⏭️ Save bloqueado (3s limit)');
-          return;
-        }
-
         try {
-          lastSaveTime.current = now;
+          addDebugInfo('💾 Auto-guardando (solo contenido del usuario)...');
           
           const snapshot = store.getSnapshot();
-          if (!snapshot?.store) return;
+          if (!snapshot?.store) {
+            addDebugInfo('❌ Snapshot inválido');
+            return;
+          }
 
+          // ✅ EXTRAER SOLO CONTENIDO DEL USUARIO (no configuraciones del sistema)
           const userData = extractUserData(snapshot);
           
-          addDebugInfo('💾 Guardando...', { shapes: userData.metadata.shapesCount });
+          addDebugInfo('📊 Datos selectivos extraídos', userData.metadata);
 
+          // Verificar si UPDATE o INSERT
           const { data: updateData, error: updateError } = await supabase
             .from('canvas_states')
             .update({ 
-              data: userData, // ✅ Solo shapes y assets, NO configuraciones del sistema
+              data: userData, // ✅ Solo shapes y assepts, NO configuraciones del sistema
               updated_at: new Date().toISOString() 
             })
             .eq('user_id', session.user.id)
             .select();
 
           if (updateError) {
-            addDebugInfo('❌ Update error', updateError);
+            addDebugInfo('❌ Error en UPDATE', updateError);
             return;
           }
 
           if (updateData && updateData.length > 0) {
-            addDebugInfo('✅ Guardado OK', { shapes: userData.metadata.shapesCount });
+            addDebugInfo('✅ UPDATE exitoso (selectivo)', { 
+              recordId: updateData[0].id,
+              shapesCount: userData.metadata.shapesCount
+            });
           } else {
+            // INSERT para usuario nuevo
             const { data: insertData, error: insertError } = await supabase
               .from('canvas_states')
               .insert({ 
@@ -219,97 +175,36 @@ export default function Canvas({ session }) {
               })
               .select();
 
-            if (!insertError) {
-              addDebugInfo('✅ Usuario nuevo creado');
+            if (insertError) {
+              addDebugInfo('❌ Error en INSERT', insertError);
+            } else {
+              addDebugInfo('✅ INSERT exitoso - Usuario nuevo (selectivo)', { 
+                recordId: insertData[0]?.id,
+                shapesCount: userData.metadata.shapesCount
+              });
             }
           }
+
         } catch (error) {
-          addDebugInfo('❌ Auto-save error', error);
+          addDebugInfo('❌ Error auto-save selectivo', error);
         }
-      }, 2000); // 2 segundos
+      }, 1000);
 
-    }, { source: 'user', scope: 'session' }); // ✅ CONSISTENTE: session scope
-
-    return () => {
-      addDebugInfo('🧹 Auto-save cleanup');
-      cleanup();
-      if (saveTimeout.current) clearTimeout(saveTimeout.current);
-    };
-  }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
-
-  // ✅ NUEVO: Paste listener INDEPENDIENTE del auto-save
-  useEffect(() => {
-    // ✅ NO depende de isReady - funciona siempre
-    if (!editorRef.current) return;
-
-    addDebugInfo('📋 Paste listener INDEPENDIENTE iniciado');
-
-    let pasteTimeout = null;
-
-    const cleanup = store.listen((entry) => {
-      // Detectar paste events
-      const pasteShapes = entry.changes.added.filter(record => {
-        if (record.typeName !== 'shape') return false;
-        
-        // URLs (bookmarks)
-        if (record.type === 'bookmark' && record.props?.url) return true;
-        
-        // Texto largo
-        if (record.type === 'text' && record.props?.text && record.props.text.length > 20) return true;
-        
-        // Imágenes
-        if (record.type === 'image') return true;
-        
-        return false;
-      });
-
-      if (pasteShapes.length > 0) {
-        addPasteEvent('🔍 paste detected', { count: pasteShapes.length });
-
-        if (pasteTimeout) clearTimeout(pasteTimeout);
-        
-        pasteTimeout = setTimeout(async () => {
-          for (const shape of pasteShapes) {
-            const pasteData = {
-              type: 'shape',
-              shapeType: shape.type,
-              id: shape.id,
-              timestamp: new Date().toISOString()
-            };
-
-            if (shape.type === 'bookmark' && shape.props?.url) {
-              pasteData.url = shape.props.url;
-              pasteData.isURL = true;
-              addPasteEvent('🔗 URL pasted', { url: shape.props.url });
-              await sendToWebhook(pasteData);
-              
-            } else if (shape.type === 'text' && shape.props?.text) {
-              pasteData.text = shape.props.text.substring(0, 50);
-              pasteData.isText = true;
-              addPasteEvent('📝 text pasted', { length: shape.props.text.length });
-              await sendToWebhook(pasteData);
-              
-            } else if (shape.type === 'image') {
-              pasteData.isImage = true;
-              addPasteEvent('🖼️ image pasted', { id: shape.id });
-              await sendToWebhook(pasteData);
-            }
-          }
-        }, 300);
-      }
     }, { source: 'user', scope: 'document' });
 
     return () => {
-      addDebugInfo('🧹 Paste listener independiente cleanup');
+      addDebugInfo('🧹 Auto-save selectivo cleanup');
       cleanup();
-      if (pasteTimeout) clearTimeout(pasteTimeout);
+      if (saveTimeout.current) {
+        clearTimeout(saveTimeout.current);
+      }
     };
-  }, [store, addPasteEvent, sendToWebhook, addDebugInfo]); // ✅ Sin isReady
+  }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
 
-  // Función de carga
+  // Función de carga - solo shapes y assets
   const loadUserData = useCallback(async () => {
     try {
-      addDebugInfo('📥 Cargando desde Supabase...');
+      addDebugInfo('📥 Cargando datos selectivos desde Supabase...');
       
       const { data, error } = await supabase
         .from('canvas_states')
@@ -318,61 +213,66 @@ export default function Canvas({ session }) {
         .single();
 
       if (error?.code === 'PGRST116') {
-        addDebugInfo('ℹ️ Usuario nuevo');
+        addDebugInfo('ℹ️ Usuario nuevo - sin datos');
         return null;
       }
 
       if (error) {
-        addDebugInfo('❌ Error carga', error);
+        addDebugInfo('❌ Error cargando', error);
         return null;
       }
 
       if (data?.data) {
-        addDebugInfo('📊 Datos encontrados', {
+        addDebugInfo('📊 Datos selectivos encontrados', {
           shapes: Object.keys(data.data.shapes || {}).length,
-          assets: Object.keys(data.data.assets || {}).length
+          assets: Object.keys(data.data.assets || {}).length,
+          metadata: data.data.metadata
         });
         return data.data;
       }
 
       return null;
     } catch (error) {
-      addDebugInfo('❌ Error inesperado', error);
+      addDebugInfo('❌ Error inesperado cargando', error);
       return null;
     }
   }, [session.user.id, addDebugInfo]);
 
-  // onMount
+  // ✅ onMount con carga selectiva - NO corrompe sistema
   const handleMount = useCallback(async (editor) => {
     editorRef.current = editor;
-    addDebugInfo('🚀 Editor montado');
+    addDebugInfo('🚀 Editor montado - iniciando carga selectiva');
 
     try {
+      // ✅ PRIMERO: Cargar contenido del usuario (shapes/assets)
       const userData = await loadUserData();
       if (userData) {
-        loadUserShapes(userData);
-        addDebugInfo('✅ Contenido cargado');
+        loadUserShapes(userData); // ✅ Carga selectiva sin tocar sistema
+        addDebugInfo('✅ Contenido del usuario cargado selectivamente');
       }
 
+      // ✅ DESPUÉS: Configurar preferencias (sin sobrescribir)
       const prefs = editor.user.getUserPreferences();
       if (prefs.colorScheme === 'system') {
         editor.user.updateUserPreferences({ colorScheme: 'dark' });
-        addDebugInfo('🌙 Dark mode');
+        addDebugInfo('🌙 Dark mode activado');
       }
       
+      // ✅ Activar grid (el sistema está intacto)
       editor.updateInstanceState({ isGridMode: true });
-      addDebugInfo('📐 Grid activado');
+      addDebugInfo('📐 Grid activado - sistema funcional');
 
       setLoading(false);
-      addDebugInfo('✅ Carga completada');
+      addDebugInfo('✅ Carga completada - funcionalidades preservadas');
 
+      // Habilitar auto-save después de delay
       setTimeout(() => {
         setIsReady(true);
-        addDebugInfo('🟢 Auto-save LISTO (solo creación/eliminación)');
+        addDebugInfo('🟢 Auto-save selectivo HABILITADO');
       }, 2000);
 
     } catch (error) {
-      addDebugInfo('❌ Error mount', error);
+      addDebugInfo('❌ Error en mount', error);
       setLoading(false);
     }
   }, [loadUserData, loadUserShapes, addDebugInfo]);
@@ -386,16 +286,20 @@ export default function Canvas({ session }) {
         inferDarkMode
       />
       
-      {/* Botones de control */}
+      {/* Botones de test mejorados */}
       <div style={{
         position: 'absolute',
         top: '10px',
         left: '10px',
-        zIndex: 1003
+        zIndex: 1002
       }}>
         <button 
           onClick={() => {
-            addDebugInfo('🧪 Estado', { loading, isReady, storeId: store.id });
+            addDebugInfo('🧪 Estado actual', {
+              loading,
+              isReady,
+              storeId: store.id
+            });
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
         >
@@ -404,13 +308,21 @@ export default function Canvas({ session }) {
 
         <button 
           onClick={() => {
+            // ✅ Test de funcionalidades básicas que se estaban perdiendo
             if (editorRef.current) {
               const camera = editorRef.current.getCamera();
               const shapes = editorRef.current.getCurrentPageShapes();
               
-              addDebugInfo('🔍 Test funciones', {
-                camera: { x: camera.x, y: camera.y, z: camera.z, isLocked: camera.isLocked },
-                shapeCount: shapes.length
+              addDebugInfo('🔍 Test funcionalidades básicas', {
+                camera: {
+                  x: camera.x,
+                  y: camera.y,
+                  z: camera.z,
+                  isLocked: camera.isLocked
+                },
+                shapeCount: shapes.length,
+                canPanZoom: 'Test manualmente pan/zoom con trackpad',
+                canPaste: 'Test pegando URL o Ctrl+V'
               });
             }
           }}
@@ -423,80 +335,13 @@ export default function Canvas({ session }) {
           onClick={() => {
             setIsReady(prev => {
               const newState = !prev;
-              addDebugInfo(`🔄 Auto-save ${newState ? 'ON (sin lag)' : 'OFF'}`);
+              addDebugInfo(`🔄 Auto-save selectivo ${newState ? 'ENABLED' : 'DISABLED'}`);
               return newState;
             });
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: isReady ? '#22c55e' : '#ef4444' }}
         >
           {isReady ? '🟢' : '🔴'} AutoSave
-        </button>
-
-        <button 
-          onClick={async () => {
-            const testData = {
-              type: 'manual_test',
-              message: 'Test webhook manual',
-              timestamp: new Date().toISOString()
-            };
-            
-            await sendToWebhook(testData);
-          }}
-          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: '#f59e0b' }}
-        >
-          📤 Test Hook
-        </button>
-
-        <button 
-          onClick={async () => {
-            try {
-              addDebugInfo('💾 Guardado manual...');
-              
-              const snapshot = store.getSnapshot();
-              if (!snapshot?.store) {
-                addDebugInfo('❌ No hay snapshot');
-                return;
-              }
-
-              const userData = extractUserData(snapshot);
-              
-              const { data: updateData, error: updateError } = await supabase
-                .from('canvas_states')
-                .update({ 
-                  data: userData,
-                  updated_at: new Date().toISOString() 
-                })
-                .eq('user_id', session.user.id)
-                .select();
-
-              if (updateError) {
-                addDebugInfo('❌ Error manual', updateError);
-                return;
-              }
-
-              if (updateData && updateData.length > 0) {
-                addDebugInfo('✅ Guardado manual OK', { shapes: userData.metadata.shapesCount });
-              } else {
-                const { data: insertData, error: insertError } = await supabase
-                  .from('canvas_states')
-                  .insert({ 
-                    user_id: session.user.id, 
-                    data: userData,
-                    updated_at: new Date().toISOString() 
-                  })
-                  .select();
-
-                if (!insertError) {
-                  addDebugInfo('✅ Manual nuevo OK');
-                }
-              }
-            } catch (error) {
-              addDebugInfo('❌ Error manual', error);
-            }
-          }}
-          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: '#10b981' }}
-        >
-          💾 Manual
         </button>
 
         <button 
@@ -508,13 +353,15 @@ export default function Canvas({ session }) {
                 .eq('user_id', session.user.id);
               
               const savedData = data?.[0]?.data;
-              addDebugInfo('🗃️ DB Estado', { 
+              addDebugInfo('🗃️ Estado DB (selectivo)', { 
                 records: data?.length || 0,
-                shapes: Object.keys(savedData?.shapes || {}).length,
-                lastUpdate: data?.[0]?.updated_at
+                shapesInDB: Object.keys(savedData?.shapes || {}).length,
+                assetsInDB: Object.keys(savedData?.assets || {}).length,
+                lastUpdate: data?.[0]?.updated_at,
+                dataStructure: savedData ? Object.keys(savedData) : []
               });
             } catch (err) {
-              addDebugInfo('❌ DB Error', err);
+              addDebugInfo('❌ Error DB', err);
             }
           }}
           style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
@@ -523,93 +370,13 @@ export default function Canvas({ session }) {
         </button>
       </div>
 
-      {/* VENTANA AZUL - Paste Events */}
+      {/* Debug panel mejorado */}
       <div style={{
         position: 'absolute',
-        top: '50px',
-        left: '10px',
-        width: '320px',
-        maxHeight: '250px',
-        backgroundColor: 'rgba(59, 130, 246, 0.95)',
-        color: 'white',
-        padding: '10px',
-        borderRadius: '8px',
-        fontSize: '11px',
-        overflow: 'auto',
-        zIndex: 1002,
-        fontFamily: 'monospace',
-        border: '2px solid #3b82f6'
-      }}>
-        <div style={{ fontWeight: 'bold', marginBottom: '10px', fontSize: '12px' }}>
-          📋 PASTE EVENTS & WEBHOOK MONITOR
-        </div>
-        <div style={{ 
-          marginBottom: '10px', 
-          fontSize: '10px', 
-          color: '#dbeafe',
-          borderBottom: '1px solid rgba(255,255,255,0.3)',
-          paddingBottom: '5px'
-        }}>
-          🔗 Webhook: 🟢 INDEPENDIENTE | n8n-boominbm...
-        </div>
-        
-        {pasteEvents.length === 0 ? (
-          <div style={{ 
-            fontSize: '11px', 
-            color: '#bfdbfe', 
-            fontStyle: 'italic',
-            textAlign: 'center',
-            padding: '20px'
-          }}>
-            💡 Pega una URL o texto largo para ver eventos aquí
-          </div>
-        ) : (
-          <div>
-            <div style={{ fontSize: '10px', marginBottom: '8px', color: '#dbeafe' }}>
-              Total eventos: {pasteEvents.length}
-            </div>
-            {pasteEvents.slice(-6).reverse().map((event) => (
-              <div key={event.id} style={{ 
-                marginBottom: '8px', 
-                borderLeft: `3px solid ${event.success === true ? '#10b981' : event.success === false ? '#ef4444' : '#fbbf24'}`,
-                paddingLeft: '8px',
-                fontSize: '10px'
-              }}>
-                <div style={{ 
-                  color: event.success === true ? '#86efac' : event.success === false ? '#fca5a5' : '#fef3c7',
-                  fontWeight: 'bold'
-                }}>
-                  [{event.time}] {event.type}
-                </div>
-                {event.data && (
-                  <div style={{ 
-                    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-                    padding: '4px',
-                    marginTop: '3px',
-                    borderRadius: '3px',
-                    fontSize: '9px',
-                    color: '#dbeafe',
-                    wordBreak: 'break-all'
-                  }}>
-                    {typeof event.data === 'string' ? 
-                      event.data.substring(0, 60) : 
-                      JSON.stringify(event.data).substring(0, 60)
-                    }...
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* VENTANA NEGRA - Debug */}
-      <div style={{
-        position: 'absolute',
-        top: '50px',
+        top: '40px',
         right: '10px',
         width: '320px',
-        maxHeight: '280px',
+        maxHeight: '300px',
         backgroundColor: 'rgba(0, 0, 0, 0.95)',
         color: 'white',
         padding: '8px',
@@ -620,16 +387,7 @@ export default function Canvas({ session }) {
         fontFamily: 'monospace'
       }}>
         <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
-          🐛 DEBUG ({debugInfo.length}) - {loading ? '⏳ Loading' : '✅ Ready'}
-        </div>
-        <div style={{ 
-          marginBottom: '8px', 
-          fontSize: '10px', 
-          color: '#fbbf24',
-          borderBottom: '1px solid rgba(255,187,36,0.3)',
-          paddingBottom: '4px'
-        }}>
-          📋 Paste: 🟢 INDEPENDIENTE (funciona siempre)
+          🐛 Debug ({debugInfo.length}) - Status: {loading ? '⏳ Loading' : '✅ Ready'}
         </div>
         <div style={{ 
           marginBottom: '8px', 
@@ -637,9 +395,17 @@ export default function Canvas({ session }) {
           color: isReady ? '#22c55e' : '#ef4444',
           fontWeight: 'bold'
         }}>
-          AutoSave: {isReady ? '🟢 SOLO CREACIÓN/ELIMINACIÓN (sin lag)' : '🔴 OFF'}
+          AutoSave: {isReady ? '🟢 ENABLED (selectivo)' : '🔴 DISABLED'}
         </div>
-        {debugInfo.slice(-8).reverse().map((info, index) => (
+        <div style={{ 
+          marginBottom: '8px', 
+          fontSize: '9px', 
+          color: '#fbbf24',
+          fontStyle: 'italic'
+        }}>
+          💡 Persistencia selectiva: Solo shapes/assets, sistema intacto
+        </div>
+        {debugInfo.slice(-10).reverse().map((info, index) => (
           <div key={index} style={{ 
             marginBottom: '4px', 
             borderBottom: '1px solid #222',
@@ -655,12 +421,13 @@ export default function Canvas({ session }) {
                 padding: '3px',
                 marginTop: '2px',
                 borderRadius: '2px',
+                maxHeight: '60px',
+                overflow: 'auto',
+                whiteSpace: 'pre-wrap',
                 fontSize: '9px',
-                color: '#94a3b8',
-                maxHeight: '40px',
-                overflow: 'hidden'
+                color: '#94a3b8'
               }}>
-                {info.data.substring(0, 80)}...
+                {info.data.substring(0, 150)}{info.data.length > 150 ? '...' : ''}
               </div>
             )}
           </div>
@@ -683,10 +450,7 @@ export default function Canvas({ session }) {
         }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: '18px', marginBottom: '10px' }}>🎨</div>
-            <div>Cargando canvas sin lag...</div>
-            <div style={{ fontSize: '12px', marginTop: '8px', color: '#888' }}>
-              Auto-save: Solo creación/eliminación | Paste: Independiente
-            </div>
+            <div>Cargando canvas con persistencia selectiva...</div>
           </div>
         </div>
       )}

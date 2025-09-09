@@ -218,7 +218,7 @@ export default function Canvas({ session }) {
       }
 
       // ✅ DESPUÉS activar grid (para que no se sobrescriba)
-      editor.updateInstanceState({ isGridMode: true });
+      editor.updateInstanceState({ isGridMode: true,  canMoveCamera: true, canZoom: true });
       addDebugInfo('📐 Grid activado (después de cargar datos)');
 
       setLoading(false);

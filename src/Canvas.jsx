@@ -160,7 +160,7 @@ export default function Canvas({ session }) {
         clearTimeout(saveTimeout.current);
       }
     };
-  }, [isReady, store, session.user.id, addDebugInfo]); // ✅ Solo depende de isReady
+  }, [isReady, store, session.user.id, addDebugInfo]); // ✅ Sol depende de isReady
 
   // Función de carga simplificada
   const loadUserData = useCallback(async () => {

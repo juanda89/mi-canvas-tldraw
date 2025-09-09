@@ -30,7 +30,7 @@ export default function Canvas({ session }) {
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
   
-  // Store limpio - MANTENER sin cargar snapshots completos
+  // Store limpio - NO cargar snapshots completos que corrompan el sistema
   const [store] = useState(() => {
     const cleanStore = createTLStore();
     try {
@@ -56,12 +56,12 @@ export default function Canvas({ session }) {
     setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
   }, []);
 
-  // ✅ NUEVO: Extraer solo shapes y datos seguros del snapshot
-  const extractUserData = (snapshot) => {
+  // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
+  const extractUserData = useCallback((snapshot) => {
     const userShapes = {};
     const userAssets = {};
     
-    // Solo extraer shapes (dibujos del usuario)
+    // Solo extraer shapes (dibujos del usuario) y assets
     Object.entries(snapshot.store).forEach(([key, value]) => {
       if (key.startsWith('shape:') && value.typeName === 'shape') {
         userShapes[key] = value;
@@ -80,29 +80,27 @@ export default function Canvas({ session }) {
         savedAt: new Date().toISOString()
       }
     };
-  };
+  }, []);
 
   // ✅ NUEVO: Cargar solo shapes sin tocar configuraciones del sistema
-  const loadUserShapes = (userData) => {
-    if (!userData.shapes) return;
+  const loadUserShapes = useCallback((userData) => {
+    if (!userData.shapes || !editorRef.current) return;
 
     addDebugInfo('📥 Cargando shapes selectivamente...', {
       shapesToLoad: Object.keys(userData.shapes).length,
       assetsToLoad: Object.keys(userData.assets || {}).length
     });
 
-    // Crear shapes una por una (sin loadSnapshot completo)
-    const shapesToCreate = Object.values(userData.shapes);
-    const assetsToCreate = Object.values(userData.assets || {});
-
     try {
       // Crear assets primero
+      const assetsToCreate = Object.values(userData.assets || {});
       if (assetsToCreate.length > 0) {
         editorRef.current.createAssets(assetsToCreate);
         addDebugInfo('✅ Assets cargados', { count: assetsToCreate.length });
       }
 
       // Crear shapes
+      const shapesToCreate = Object.values(userData.shapes);
       if (shapesToCreate.length > 0) {
         editorRef.current.createShapes(shapesToCreate);
         addDebugInfo('✅ Shapes cargados', { count: shapesToCreate.length });
@@ -111,9 +109,9 @@ export default function Canvas({ session }) {
     } catch (error) {
       addDebugInfo('❌ Error cargando shapes', error);
     }
-  };
+  }, [addDebugInfo]);
 
-  // ✅ APPROACH NUEVO: useEffect separado para guardado automático
+  // ✅ Auto-save con persistencia selectiva
   useEffect(() => {
     if (!isReady) {
       addDebugInfo('⏭️ AutoSave: No ready yet');
@@ -125,7 +123,7 @@ export default function Canvas({ session }) {
     let changeCount = 0;
     const cleanup = store.listen(() => {
       changeCount++;
-      addDebugInfo(`🔄 Store cambio #${changeCount} - AutoSave activo`);
+      addDebugInfo(`🔄 Store cambio #${changeCount} - AutoSave selectivo activo`);
 
       if (saveTimeout.current) {
         clearTimeout(saveTimeout.current);
@@ -133,7 +131,7 @@ export default function Canvas({ session }) {
 
       saveTimeout.current = setTimeout(async () => {
         try {
-          addDebugInfo('💾 Auto-guardando (selectivo)...');
+          addDebugInfo('💾 Auto-guardando (solo contenido del usuario)...');
           
           const snapshot = store.getSnapshot();
           if (!snapshot?.store) {
@@ -141,50 +139,33 @@ export default function Canvas({ session }) {
             return;
           }
 
-          // ✅ EXTRAER SOLO DATOS DEL USUARIO (no configuraciones del sistema)
+          // ✅ EXTRAER SOLO CONTENIDO DEL USUARIO (no configuraciones del sistema)
           const userData = extractUserData(snapshot);
           
-          addDebugInfo('📊 Datos extraídos', userData.metadata);
+          addDebugInfo('📊 Datos selectivos extraídos', userData.metadata);
 
-          // Verificar si el usuario existe
-          const { data: existingData, error: selectError } = await supabase
+          // Verificar si UPDATE o INSERT
+          const { data: updateData, error: updateError } = await supabase
             .from('canvas_states')
-            .select('id, user_id')
+            .update({ 
+              data: userData, // ✅ Solo shapes y assets, NO configuraciones del sistema
+              updated_at: new Date().toISOString() 
+            })
             .eq('user_id', session.user.id)
-            .single();
+            .select();
 
-          if (selectError && selectError.code !== 'PGRST116') {
-            addDebugInfo('❌ Error verificando usuario existente', selectError);
+          if (updateError) {
+            addDebugInfo('❌ Error en UPDATE', updateError);
             return;
           }
 
-          const userExists = !!existingData;
-          addDebugInfo(`🔍 Usuario ${userExists ? 'EXISTS' : 'NUEVO'}`, {
-            userExists,
-            existingRecordId: existingData?.id
-          });
-
-          if (userExists) {
-            // Usuario existe → UPDATE solo con datos del usuario
-            const { data: updateData, error: updateError } = await supabase
-              .from('canvas_states')
-              .update({ 
-                data: userData, // ✅ Solo shapes y assets, no configuraciones del sistema
-                updated_at: new Date().toISOString() 
-              })
-              .eq('user_id', session.user.id)
-              .select();
-
-            if (updateError) {
-              addDebugInfo('❌ Error en UPDATE', updateError);
-            } else {
-              addDebugInfo('✅ UPDATE exitoso (selectivo)', { 
-                recordId: updateData[0]?.id,
-                shapesCount: userData.metadata.shapesCount
-              });
-            }
+          if (updateData && updateData.length > 0) {
+            addDebugInfo('✅ UPDATE exitoso (selectivo)', { 
+              recordId: updateData[0].id,
+              shapesCount: userData.metadata.shapesCount
+            });
           } else {
-            // Usuario nuevo → INSERT
+            // INSERT para usuario nuevo
             const { data: insertData, error: insertError } = await supabase
               .from('canvas_states')
               .insert({ 
@@ -197,7 +178,7 @@ export default function Canvas({ session }) {
             if (insertError) {
               addDebugInfo('❌ Error en INSERT', insertError);
             } else {
-              addDebugInfo('✅ INSERT exitoso - Usuario creado (selectivo)', { 
+              addDebugInfo('✅ INSERT exitoso - Usuario nuevo (selectivo)', { 
                 recordId: insertData[0]?.id,
                 shapesCount: userData.metadata.shapesCount
               });
@@ -205,94 +186,22 @@ export default function Canvas({ session }) {
           }
 
         } catch (error) {
-          addDebugInfo('❌ Error auto-save', error);
+          addDebugInfo('❌ Error auto-save selectivo', error);
         }
       }, 1000);
 
     }, { source: 'user', scope: 'document' });
 
     return () => {
-      addDebugInfo('🧹 Auto-save cleanup');
+      addDebugInfo('🧹 Auto-save selectivo cleanup');
       cleanup();
       if (saveTimeout.current) {
         clearTimeout(saveTimeout.current);
       }
     };
-  }, [isReady, store, session.user.id, addDebugInfo]);
+  }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
 
-  // ✅ NUEVO: Listener para detectar URLs pegadas
-  useEffect(() => {
-    if (!isReady || !editorRef.current) return;
-
-    addDebugInfo('🔗 Configurando listener de URLs...');
-
-    const cleanup = store.listen((changes) => {
-      changes.added.forEach(record => {
-        if (record.typeName === 'shape' && record.type === 'bookmark') {
-          handleURLDetected(record);
-        }
-      });
-    }, { source: 'user', scope: 'document' });
-
-    return () => {
-      addDebugInfo('🧹 URL listener cleanup');
-      cleanup();
-    };
-  }, [isReady, store]);
-
-  // Función para verificar y procesar URLs
-  const handleURLDetected = async (shape) => {
-    const url = shape.props.url;
-    
-    const isInstagram = url.includes('instagram.com') || url.includes('instagr.am');
-    const isTiktok = url.includes('tiktok.com') || url.includes('vm.tiktok.com');
-    
-    if (isInstagram || isTiktok) {
-      addDebugInfo('🔗 URL detectada', { 
-        url, 
-        shapeId: shape.id, 
-        platform: isInstagram ? 'instagram' : 'tiktok' 
-      });
-      
-      try {
-        addDebugInfo('📤 Enviando a edge function...');
-
-        const { data, error } = await supabase.functions.invoke('process-social-url', {
-          body: {
-            url: url,
-            shapeId: shape.id,
-            platform: isInstagram ? 'instagram' : 'tiktok'
-          }
-        });
-
-        if (error) {
-          addDebugInfo('❌ Error en edge function', error);
-          return;
-        }
-
-        addDebugInfo('✅ Edge function exitosa', data);
-        
-        if (data.thumbnail) {
-          editorRef.current.updateShape({
-            id: shape.id,
-            props: {
-              image: data.thumbnail,
-              title: data.title || shape.props.title
-            }
-          });
-          
-          addDebugInfo('✅ Thumbnail actualizado', { shapeId: shape.id });
-        }
-
-      } catch (error) {
-        addDebugInfo('❌ Error procesando URL', error);
-      }
-    } else {
-      addDebugInfo('ℹ️ URL no es Instagram/TikTok', { url });
-    }
-  };
-
-  // Función de carga simplificada - SOLO shapes
+  // Función de carga - solo shapes y assets
   const loadUserData = useCallback(async () => {
     try {
       addDebugInfo('📥 Cargando datos selectivos desde Supabase...');
@@ -314,7 +223,7 @@ export default function Canvas({ session }) {
       }
 
       if (data?.data) {
-        addDebugInfo('📊 Datos encontrados (selectivos)', {
+        addDebugInfo('📊 Datos selectivos encontrados', {
           shapes: Object.keys(data.data.shapes || {}).length,
           assets: Object.keys(data.data.assets || {}).length,
           metadata: data.data.metadata
@@ -329,44 +238,44 @@ export default function Canvas({ session }) {
     }
   }, [session.user.id, addDebugInfo]);
 
-  // onMount SIMPLIFICADO - carga selectiva
+  // ✅ onMount con carga selectiva - NO corrompe sistema
   const handleMount = useCallback(async (editor) => {
     editorRef.current = editor;
-    addDebugInfo('🚀 Editor montado');
+    addDebugInfo('🚀 Editor montado - iniciando carga selectiva');
 
     try {
-      // Configurar preferencias (DESPUÉS de cargar datos)
+      // ✅ PRIMERO: Cargar contenido del usuario (shapes/assets)
+      const userData = await loadUserData();
+      if (userData) {
+        loadUserShapes(userData); // ✅ Carga selectiva sin tocar sistema
+        addDebugInfo('✅ Contenido del usuario cargado selectivamente');
+      }
+
+      // ✅ DESPUÉS: Configurar preferencias (sin sobrescribir)
       const prefs = editor.user.getUserPreferences();
       if (prefs.colorScheme === 'system') {
         editor.user.updateUserPreferences({ colorScheme: 'dark' });
         addDebugInfo('🌙 Dark mode activado');
       }
-
-      // ✅ CARGAR SOLO SHAPES (sin tocar configuraciones del sistema)
-      const userData = await loadUserData();
-      if (userData) {
-        loadUserShapes(userData); // ✅ Carga selectiva
-        addDebugInfo('✅ Shapes cargados selectivamente');
-      }
-
-      // Activar grid DESPUÉS (no se sobrescribe porque no cargamos snapshot completo)
+      
+      // ✅ Activar grid (el sistema está intacto)
       editor.updateInstanceState({ isGridMode: true });
-      addDebugInfo('📐 Grid activado (sistema intacto)');
+      addDebugInfo('📐 Grid activado - sistema funcional');
 
       setLoading(false);
-      addDebugInfo('✅ Carga completada - sistema funcional');
+      addDebugInfo('✅ Carga completada - funcionalidades preservadas');
 
-      // Habilitar auto-save
+      // Habilitar auto-save después de delay
       setTimeout(() => {
         setIsReady(true);
-        addDebugInfo('🟢 Auto-save HABILITADO (selectivo)');
+        addDebugInfo('🟢 Auto-save selectivo HABILITADO');
       }, 2000);
 
     } catch (error) {
       addDebugInfo('❌ Error en mount', error);
       setLoading(false);
     }
-  }, [loadUserData, addDebugInfo]);
+  }, [loadUserData, loadUserShapes, addDebugInfo]);
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>
@@ -377,7 +286,7 @@ export default function Canvas({ session }) {
         inferDarkMode
       />
       
-      {/* Botones de test */}
+      {/* Botones de test mejorados */}
       <div style={{
         position: 'absolute',
         top: '10px',
@@ -399,24 +308,40 @@ export default function Canvas({ session }) {
 
         <button 
           onClick={() => {
-            // Test de funcionalidad básica
+            // ✅ Test de funcionalidades básicas que se estaban perdiendo
             if (editorRef.current) {
               const camera = editorRef.current.getCamera();
-              const canPaste = true; // Esto debería funcionar ahora
+              const shapes = editorRef.current.getCurrentPageShapes();
               
-              addDebugInfo('🔍 Test funcionalidad', {
+              addDebugInfo('🔍 Test funcionalidades básicas', {
                 camera: {
-                  isLocked: camera.isLocked,
-                  canPanZoom: !camera.isLocked
+                  x: camera.x,
+                  y: camera.y,
+                  z: camera.z,
+                  isLocked: camera.isLocked
                 },
-                canPaste: canPaste,
-                shapeCount: editorRef.current.getCurrentPageShapes().length
+                shapeCount: shapes.length,
+                canPanZoom: 'Test manualmente pan/zoom con trackpad',
+                canPaste: 'Test pegando URL o Ctrl+V'
               });
             }
           }}
-          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px' }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: '#3b82f6' }}
         >
           🔍 Funciones
+        </button>
+        
+        <button 
+          onClick={() => {
+            setIsReady(prev => {
+              const newState = !prev;
+              addDebugInfo(`🔄 Auto-save selectivo ${newState ? 'ENABLED' : 'DISABLED'}`);
+              return newState;
+            });
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: isReady ? '#22c55e' : '#ef4444' }}
+        >
+          {isReady ? '🟢' : '🔴'} AutoSave
         </button>
 
         <button 
@@ -432,7 +357,8 @@ export default function Canvas({ session }) {
                 records: data?.length || 0,
                 shapesInDB: Object.keys(savedData?.shapes || {}).length,
                 assetsInDB: Object.keys(savedData?.assets || {}).length,
-                lastUpdate: data?.[0]?.updated_at
+                lastUpdate: data?.[0]?.updated_at,
+                dataStructure: savedData ? Object.keys(savedData) : []
               });
             } catch (err) {
               addDebugInfo('❌ Error DB', err);
@@ -444,7 +370,7 @@ export default function Canvas({ session }) {
         </button>
       </div>
 
-      {/* Debug panel */}
+      {/* Debug panel mejorado */}
       <div style={{
         position: 'absolute',
         top: '40px',
@@ -470,6 +396,14 @@ export default function Canvas({ session }) {
           fontWeight: 'bold'
         }}>
           AutoSave: {isReady ? '🟢 ENABLED (selectivo)' : '🔴 DISABLED'}
+        </div>
+        <div style={{ 
+          marginBottom: '8px', 
+          fontSize: '9px', 
+          color: '#fbbf24',
+          fontStyle: 'italic'
+        }}>
+          💡 Persistencia selectiva: Solo shapes/assets, sistema intacto
         </div>
         {debugInfo.slice(-10).reverse().map((info, index) => (
           <div key={index} style={{ 
@@ -516,7 +450,7 @@ export default function Canvas({ session }) {
         }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: '18px', marginBottom: '10px' }}>🎨</div>
-            <div>Cargando canvas...</div>
+            <div>Cargando canvas con persistencia selectiva...</div>
           </div>
         </div>
       )}

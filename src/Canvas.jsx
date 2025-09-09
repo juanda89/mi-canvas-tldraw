@@ -26,7 +26,7 @@ const uiOverrides = {
 export default function Canvas({ session }) {
   const [loading, setLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState([]);
-  const [isReady, setIsReady] = useState(false); // ✅ NUEVO: Estado simple para saber si puede guardar
+  const [isReady, setIsReady] = useState(false); // ✅ NUEVO:  Estado ssimple para saber si puede guardar
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
   
@@ -88,45 +88,31 @@ export default function Canvas({ session }) {
           const shapesCount = Object.keys(snapshot.store).filter(k => k.startsWith('shape:')).length;
           addDebugInfo('📊 Guardando...', { shapesCount });
 
-          // ✅ PASO 1: Verificar si el usuario ya tiene un registro
-          const { data: existingData, error: selectError } = await supabase
+          // ✅ UPDATE con verificación de filas afectadas
+          const { data: updateData, error: updateError } = await supabase
             .from('canvas_states')
-            .select('id, user_id')
+            .update({ 
+              data: snapshot, 
+              updated_at: new Date().toISOString() 
+            })
             .eq('user_id', session.user.id)
-            .single();
+            .select(); // ✅ IMPORTANTE: .select() para obtener datos actualizados
 
-          if (selectError && selectError.code !== 'PGRST116') {
-            addDebugInfo('❌ Error verificando usuario existente', selectError);
+          if (updateError) {
+            addDebugInfo('❌ Error en UPDATE', updateError);
             return;
           }
 
-          const userExists = !!existingData;
-          addDebugInfo(`🔍 Usuario ${userExists ? 'EXISTS' : 'NUEVO'}`, {
-            userExists,
-            existingRecordId: existingData?.id
-          });
-
-          if (userExists) {
-            // ✅ PASO 2A: Usuario existe → UPDATE
-            const { data: updateData, error: updateError } = await supabase
-              .from('canvas_states')
-              .update({ 
-                data: snapshot, 
-                updated_at: new Date().toISOString() 
-              })
-              .eq('user_id', session.user.id)
-              .select();
-
-            if (updateError) {
-              addDebugInfo('❌ Error en UPDATE', updateError);
-            } else {
-              addDebugInfo('✅ UPDATE exitoso', { 
-                recordId: updateData[0]?.id,
-                shapesCount 
-              });
-            }
+          // ✅ Verificar si UPDATE realmente actualizó algo
+          if (updateData && updateData.length > 0) {
+            addDebugInfo('✅ Guardado (UPDATE exitoso)', { 
+              shapesCount, 
+              recordId: updateData[0].id 
+            });
           } else {
-            // ✅ PASO 2B: Usuario nuevo → INSERT
+            // ✅ Si UPDATE no afectó filas, hacer INSERT
+            addDebugInfo('ℹ️ UPDATE no afectó filas, insertando nuevo registro...');
+            
             const { data: insertData, error: insertError } = await supabase
               .from('canvas_states')
               .insert({ 
@@ -139,8 +125,8 @@ export default function Canvas({ session }) {
             if (insertError) {
               addDebugInfo('❌ Error en INSERT', insertError);
             } else {
-              addDebugInfo('✅ INSERT exitoso - Usuario creado', { 
-                recordId: insertData[0]?.id,
+              addDebugInfo('✅ Guardado (INSERT nuevo usuario)', { 
+                recordId: insertData[0]?.id, 
                 shapesCount 
               });
             }
@@ -209,17 +195,16 @@ export default function Canvas({ session }) {
         editor.user.updateUserPreferences({ colorScheme: 'dark' });
         addDebugInfo('🌙 Dark mode activado');
       }
+      
+      editor.updateInstanceState({ isGridMode: true });
+      addDebugInfo('📐 Grid activado');
 
-      // Cargar datos PRIMERO
+      // Cargar datos
       const userData = await loadUserData();
       if (userData) {
         store.loadSnapshot(userData);
         addDebugInfo('✅ Datos cargados en store');
       }
-
-      // ✅ DESPUÉS activar grid (para que no se sobrescriba)
-      editor.updateInstanceState({ isGridMode: true,  canMoveCamera: true, canZoom: true });
-      addDebugInfo('📐 Grid activado (después de cargar datos)');
 
       setLoading(false);
       addDebugInfo('✅ Carga completada');

@@ -342,6 +342,30 @@ export default function Canvas({ session }) {
         >
           🗃️ DB
         </button>
+
+        <button 
+          onClick={() => {
+            // Test manual de detección de URLs
+            const testURLs = [
+              'https://www.instagram.com/p/test123/',
+              'https://www.tiktok.com/@user/video/123456',
+              'https://google.com'
+            ];
+            
+            testURLs.forEach((url, index) => {
+              const mockShape = {
+                id: `test-shape-${index}`,
+                type: 'bookmark',
+                props: { url }
+              };
+              
+              handleURLDetected(mockShape);
+            });
+          }}
+          style={{ margin: '2px', padding: '4px 8px', fontSize: '11px', backgroundColor: '#3b82f6' }}
+        >
+          🧪 Test URLs
+        </button>
       </div>
 
       {/* Debug panel */}

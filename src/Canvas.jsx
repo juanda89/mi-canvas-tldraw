@@ -196,7 +196,7 @@ export default function Canvas({ session }) {
           const { data: updateData, error: updateError } = await supabase
             .from('canvas_states')
             .update({ 
-              data: userData,
+              data: userData, // ✅ Solo shapes y assets, NO configuraciones del sistema
               updated_at: new Date().toISOString() 
             })
             .eq('user_id', session.user.id)

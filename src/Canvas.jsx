@@ -244,7 +244,7 @@ export default function Canvas({ session }) {
         clearTimeout(saveTimeout.current);
       }
     };
-  }, [loadUserData, saveUserData, session.user.id, addDebugInfo, store, loading]);
+  }, [loadUserData, saveUserData, session.user.id, addDebugInfo, store]); // ✅ Remover loading
 
   return (
     <div style={{ position: 'fixed', inset: 0 }}>

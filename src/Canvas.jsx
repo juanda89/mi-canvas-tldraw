@@ -244,6 +244,36 @@ export default function Canvas({ session }) {
     addDebugInfo('🚀 Editor montado - iniciando carga selectiva');
 
     try {
+      // Interceptar URLs pegadas/soltadas y llamar Edge Function
+      try {
+        const originalUrlHandler = editor.externalContentHandlers?.url;
+        editor.registerExternalContentHandler('url', async (externalContent) => {
+          const pastedUrl = externalContent?.url;
+          if (pastedUrl) {
+            addDebugInfo('📎 URL detectada en canvas', { url: pastedUrl });
+            try {
+              const { data, error } = await supabase.functions.invoke('process-social-url', {
+                body: { url: pastedUrl },
+              });
+              if (error) {
+                addDebugInfo('❌ Edge Function error', error);
+              } else {
+                addDebugInfo('✅ Edge Function respuesta', data);
+              }
+            } catch (err) {
+              addDebugInfo('❌ Edge Function fallo', err);
+            }
+          }
+          // Mantener el comportamiento por defecto de tldraw
+          if (typeof originalUrlHandler === 'function') {
+            return originalUrlHandler(externalContent);
+          }
+        });
+        addDebugInfo('🔗 Handler de URL registrado');
+      } catch (e) {
+        addDebugInfo('⚠️ No se pudo registrar handler de URL', e);
+      }
+
       // ✅ PRIMERO: Cargar contenido del usuario (shapes/assets)
       const userData = await loadUserData();
       if (userData) {

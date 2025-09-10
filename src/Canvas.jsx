@@ -174,8 +174,7 @@ export default function Canvas({ session }) {
     if (!assetId) return;
     const asset = editor.getAsset(assetId);
     if (!asset) return;
-    if (asset.props.image) return; // ya tiene imagen
-    // Usar GIF de Cloudinary como placeholder de loading
+    // Forzar GIF de Cloudinary como placeholder de loading
     editor.updateAssets([
       { ...asset, props: { ...asset.props, image: LOADING_THUMB_URL, title: asset.props.title || '', description: asset.props.description || '' } }
     ]);

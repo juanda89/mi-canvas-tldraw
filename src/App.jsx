@@ -106,15 +106,15 @@ function App() {
                   variables: {
                     default: {
                       colors: {
-                        brand: '#22c55e',
-                        brandAccent: '#16a34a',
-                        inputBackground: '#0b1220',
-                        inputBorder: '#25324a',
-                        inputText: '#e5e7eb',
-                        inputLabelText: '#9aa4b2',
-                        messageText: '#9aa4b2',
-                        defaultButtonBackground: '#22c55e',
-                        defaultButtonText: '#0b1220',
+                        brand: '#387FFF',
+                        brandAccent: '#2F6DE0',
+                        inputBackground: '#0E1426',
+                        inputBorder: '#2A3555',
+                        inputText: '#E5E7EB',
+                        inputLabelText: '#9AA4B2',
+                        messageText: '#9AA4B2',
+                        defaultButtonBackground: '#387FFF',
+                        defaultButtonText: '#0B1220',
                       },
                       radii: {
                         borderRadiusButton: '10px',
@@ -133,19 +133,19 @@ function App() {
                   style: {
                     container: { width: '100%' },
                     button: {
-                      background: 'linear-gradient(180deg, #22c55e, #16a34a)',
-                      color: '#081018',
-                      border: '1px solid rgba(34,197,94,0.6)',
+                      background: '#387FFF',
+                      color: '#0B1220',
+                      border: '1px solid rgba(56,127,255,0.55)',
                       borderRadius: '10px',
                       fontWeight: 600,
                     },
                     input: {
-                      background: 'rgba(8,16,24,0.7)',
-                      border: '1px solid #25324a',
-                      color: '#e5e7eb',
+                      background: 'rgba(11,18,32,0.8)',
+                      border: '1px solid #2A3555',
+                      color: '#E5E7EB',
                       borderRadius: '10px',
                     },
-                    anchor: { color: '#22c55e' },
+                    anchor: { color: '#8FB6FF' },
                     label: { color: '#9aa4b2' },
                     message: { color: '#9aa4b2' },
                   },
@@ -196,7 +196,7 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: '1fr 1fr',
     fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-    background: 'radial-gradient(1200px 500px at 10% -10%, rgba(34,197,94,0.25), transparent 50%), radial-gradient(1000px 600px at 110% 110%, rgba(34,197,94,0.15), transparent 50%), linear-gradient(180deg, #0b1220, #0b1220)',
+    background: 'radial-gradient(1200px 500px at 10% -10%, rgba(56,127,255,0.20), transparent 50%), radial-gradient(1000px 600px at 110% 110%, rgba(56,127,255,0.12), transparent 50%), linear-gradient(180deg, #0B1220, #0B1220)',
     position: 'relative',
     overflow: 'hidden'
   },
@@ -207,7 +207,7 @@ const styles = {
     flexDirection: 'column',
     justifyContent: 'center',
     padding: '3.5rem',
-    color: '#e5e7eb',
+    color: '#E5E7EB',
     backgroundImage: 'radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)',
     backgroundSize: '24px 24px',
     borderRight: '1px solid rgba(148,163,184,0.08)'
@@ -224,9 +224,9 @@ const styles = {
     display: 'inline-flex',
     alignItems: 'center',
     gap: '10px',
-    background: 'rgba(34,197,94,0.12)',
-    color: '#86efac',
-    border: '1px solid rgba(34,197,94,0.25)',
+    background: 'rgba(56,127,255,0.12)',
+    color: '#BFD6FF',
+    border: '1px solid rgba(56,127,255,0.25)',
     padding: '6px 12px',
     borderRadius: '9999px',
     width: 'fit-content',
@@ -241,8 +241,8 @@ const styles = {
     width: '8px',
     height: '8px',
     borderRadius: '9999px',
-    background: 'linear-gradient(180deg, #22c55e, #16a34a)',
-    boxShadow: '0 0 0 3px rgba(34,197,94,0.15)'
+    background: 'linear-gradient(180deg, #41A0FF, #2F6DE0)',
+    boxShadow: '0 0 0 3px rgba(56,127,255,0.20)'
   },
 
   headline: {
@@ -251,12 +251,12 @@ const styles = {
     margin: 0,
     fontWeight: 800,
     letterSpacing: '-0.02em',
-    color: '#f8fafc'
+    color: '#F8FAFC'
   },
 
   tagline: {
     marginTop: '0.75rem',
-    color: '#93a3b8',
+    color: '#9AA4B2',
     fontSize: '1.1rem'
   },
 
@@ -266,7 +266,7 @@ const styles = {
     left: '-60px',
     width: '220px',
     height: '220px',
-    background: 'conic-gradient(from 180deg at 50% 50%, rgba(34,197,94,0.4), transparent 60%)',
+    background: 'conic-gradient(from 180deg at 50% 50%, rgba(56,127,255,0.35), transparent 60%)',
     filter: 'blur(40px)',
     opacity: 0.7,
     pointerEvents: 'none'
@@ -274,8 +274,8 @@ const styles = {
 
   authCard: {
     width: '420px',
-    background: 'rgba(15, 23, 42, 0.65)',
-    border: '1px solid rgba(148,163,184,0.12)',
+    background: 'rgba(10, 15, 30, 0.7)',
+    border: '1px solid rgba(80,120,180,0.18)',
     boxShadow: '0 10px 40px rgba(0,0,0,0.35)',
     backdropFilter: 'blur(8px)',
     borderRadius: '16px',

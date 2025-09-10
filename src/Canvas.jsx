@@ -121,7 +121,7 @@ export default function Canvas({ session }) {
     const title = data?.title || data?.meta?.title || asset.props.title || '';
     const description = data?.description || data?.meta?.description || asset.props.description || '';
     const favicon = data?.favicon || data?.meta?.favicon || asset.props.favicon || '';
-    const rawImage = data?.thumbnailUrl || data?.thumbnail_url || data?.image || data?.image_url || asset.props.image || '';
+    const rawImage = data?.thumbnail || data?.thumbnailUrl || data?.thumbnail_url || data?.image || data?.image_url || asset.props.image || '';
     const finalImage = rawImage ? ensureJpg(rawImage) : rawImage;
 
     editor.run(() => {
@@ -149,11 +149,11 @@ export default function Canvas({ session }) {
     const imgH = Number(data?.height || data?.h) || null;
     if (imgW && imgH) {
       fitToImage(imgW, imgH);
-    } else if (image) {
+    } else if (finalImage) {
       try {
         const img = new Image();
         img.onload = () => fitToImage(img.naturalWidth, img.naturalHeight);
-        img.src = finalImage || rawImage;
+        img.src = finalImage;
       } catch {/* ignore */}
     }
   }, [addDebugInfo, refreshBookmarkShape]);
@@ -991,7 +991,7 @@ export default function Canvas({ session }) {
                 {(() => {
                   const edgeData = edgeDataRef.current[`shape:${inspector.shapeId}`] || edgeDataRef.current[`url:${inspector.url}`];
                   if (!edgeData) return null;
-                  const thumb = edgeData.thumbnailUrl || edgeData.thumbnail_url || edgeData.image || edgeData.image_url;
+                  const thumb = edgeData.thumbnail || edgeData.thumbnailUrl || edgeData.thumbnail_url || edgeData.image || edgeData.image_url;
                   const title = edgeData.title || edgeData.meta?.title;
                   const desc = edgeData.description || edgeData.meta?.description;
                   return (

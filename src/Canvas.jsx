@@ -44,17 +44,17 @@ export default function Canvas({ session }) {
     return cleanStore;
   });
 
-  // Debug function
+  // Debug function (persistente y detallada)
   const addDebugInfo = useCallback((message, data = null) => {
     const timestamp = new Date().toLocaleTimeString();
-    const debugEntry = {
-      time: timestamp,
-      message,
-      data: data ? JSON.stringify(data, null, 2) : null
+    const normalize = (d) => {
+      if (!d) return null;
+      if (d instanceof Error) return { name: d.name, message: d.message, stack: d.stack };
+      return d;
     };
-    
+    const debugEntry = { time: timestamp, message, data: normalize(data) };
     console.log(`🐛 [${timestamp}] ${message}`, data || '');
-    setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
+    setDebugInfo(prev => [...prev, debugEntry]);
   }, []);
 
   // Ventana flotante: helper para eventos breves (pegado / edge)
@@ -69,6 +69,101 @@ export default function Canvas({ session }) {
       setOverlayEvents((prev) => prev.filter((e) => e.id !== id));
     }, 8000);
   }, []);
+
+  // Convierte un bookmark en un video shape usando datos de la Edge Function
+  const convertBookmarkToVideo = useCallback((editor, params) => {
+    try {
+      const { shapeId, pastedUrl, payload } = params;
+      const bookmark = editor.getShape(shapeId);
+      if (!bookmark || bookmark.type !== 'bookmark') {
+        addDebugInfo('⚠️ No es bookmark o no existe shape para convertir', { shapeId });
+        return;
+      }
+
+      const videoUrl = payload?.videoUrl || payload?.video_url || payload?.url || payload?.mediaUrl || payload?.media_url;
+      const thumbnailUrl = payload?.thumbnailUrl || payload?.thumbnail_url || payload?.image || payload?.image_url || payload?.thumbnail;
+      const title = payload?.title || payload?.meta?.title || '';
+      const description = payload?.description || payload?.meta?.description || '';
+      const w = Number(payload?.width || payload?.w) || 480;
+      const h = Number(payload?.height || payload?.h) || 270;
+
+      if (!videoUrl) {
+        addDebugInfo('ℹ️ Edge sin videoUrl - se mantiene bookmark', { payload });
+        return;
+      }
+
+      const x = bookmark.x;
+      const y = bookmark.y;
+      const opacity = bookmark.opacity ?? 1;
+
+      // Si no es un formato reproducible directo, intentar EMBED
+      const isDirectPlayable = /\.(mp4|webm|ogg)(\?|#|$)/i.test(videoUrl);
+      if (!isDirectPlayable) {
+        try {
+          const embedUtil = editor.getShapeUtil('embed');
+          const embedInfo = embedUtil?.getEmbedDefinition(pastedUrl);
+          if (embedInfo) {
+            editor.run(() => {
+              editor.deleteShapes([shapeId]);
+              editor.createShape({
+                id: shapeId,
+                type: 'embed',
+                x, y, opacity,
+                props: {
+                  w: embedInfo.definition.width || w,
+                  h: embedInfo.definition.height || h,
+                  url: embedInfo.url,
+                }
+              });
+              editor.select(shapeId);
+            });
+            addDebugInfo('🧩 Convertido a EMBED shape', { shapeId, url: embedInfo.url, title });
+            pushOverlayEvent('🧩 Bookmark convertido a EMBED');
+            return;
+          }
+        } catch (e) {
+          addDebugInfo('⚠️ Fallback EMBED falló, intento VIDEO directo', e);
+        }
+      }
+
+      // Crear asset de video y shape VIDEO
+      const assetId = `asset:vid-${(globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2))}`;
+      const asset = {
+        id: assetId,
+        typeName: 'asset',
+        type: 'video',
+        props: {
+          name: title || 'video',
+          src: videoUrl,
+          w, h,
+          fileSize: 0,
+          mimeType: 'video/mp4',
+          isAnimated: false,
+        },
+        meta: {
+          title,
+          description,
+          thumbnail: thumbnailUrl,
+          sourceUrl: pastedUrl,
+        }
+      };
+
+      editor.run(() => {
+        editor.createAssets([asset]);
+        editor.deleteShapes([shapeId]);
+        editor.createShapes([
+          { id: shapeId, type: 'video', x, y, opacity, props: { assetId, w, h } }
+        ]);
+        editor.select(shapeId);
+      });
+
+      addDebugInfo('🎬 Convertido a VIDEO shape', { shapeId, assetId, title });
+      pushOverlayEvent('🎬 Bookmark convertido a VIDEO');
+    } catch (err) {
+      addDebugInfo('❌ Error convirtiendo bookmark a video', err);
+      pushOverlayEvent('❌ Error al convertir a VIDEO');
+    }
+  }, [addDebugInfo, pushOverlayEvent]);
 
   // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
   const extractUserData = useCallback((snapshot) => {
@@ -346,6 +441,8 @@ export default function Canvas({ session }) {
               } else {
                 addDebugInfo('✅ Edge Function respuesta', data);
                 pushOverlayEvent('✅ Edge Function OK');
+                // Intentar convertir a video shape si hay datos suficientes
+                convertBookmarkToVideo(editor, { shapeId, pastedUrl, payload: data });
               }
             } catch (err) {
               addDebugInfo('❌ Edge Function fallo', err);
@@ -484,13 +581,13 @@ export default function Canvas({ session }) {
         </button>
       </div>
 
-      {/* Debug panel mejorado */}
+      {/* Debug panel persistente */}
       <div style={{
         position: 'absolute',
         top: '40px',
         right: '10px',
         width: '320px',
-        maxHeight: '300px',
+        maxHeight: '380px',
         backgroundColor: 'rgba(0, 0, 0, 0.95)',
         color: 'white',
         padding: '8px',
@@ -500,8 +597,18 @@ export default function Canvas({ session }) {
         zIndex: 1001,
         fontFamily: 'monospace'
       }}>
-        <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
-          🐛 Debug ({debugInfo.length}) - Status: {loading ? '⏳ Loading' : '✅ Ready'}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
+          <span>🐛 Debug ({debugInfo.length}) - Status: {loading ? '⏳ Loading' : '✅ Ready'}</span>
+          <span style={{ display: 'flex', gap: '6px' }}>
+            <button
+              onClick={() => navigator.clipboard?.writeText(JSON.stringify(debugInfo, null, 2)).catch(() => {})}
+              style={{ pointerEvents: 'auto', fontSize: '10px', padding: '2px 6px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px' }}
+            >Copy</button>
+            <button
+              onClick={() => setDebugInfo([])}
+              style={{ pointerEvents: 'auto', fontSize: '10px', padding: '2px 6px', background: '#ef4444', color: 'white', border: '1px solid #b91c1c', borderRadius: '4px' }}
+            >Clear</button>
+          </span>
         </div>
         <div style={{ 
           marginBottom: '8px', 
@@ -519,7 +626,7 @@ export default function Canvas({ session }) {
         }}>
           💡 Persistencia selectiva: Solo shapes/assets, sistema intacto
         </div>
-        {debugInfo.slice(-10).reverse().map((info, index) => (
+        {debugInfo.slice().reverse().map((info, index) => (
           <div key={index} style={{ 
             marginBottom: '4px', 
             borderBottom: '1px solid #222',
@@ -535,13 +642,13 @@ export default function Canvas({ session }) {
                 padding: '3px',
                 marginTop: '2px',
                 borderRadius: '2px',
-                maxHeight: '60px',
+                maxHeight: '160px',
                 overflow: 'auto',
                 whiteSpace: 'pre-wrap',
                 fontSize: '9px',
                 color: '#94a3b8'
               }}>
-                {info.data.substring(0, 150)}{info.data.length > 150 ? '...' : ''}
+                {typeof info.data === 'string' ? info.data : JSON.stringify(info.data, null, 2)}
               </div>
             )}
           </div>

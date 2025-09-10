@@ -277,7 +277,7 @@ export default function Canvas({ session }) {
     }
   }, [session.user.id, addDebugInfo]);
 
-  // ✅ onMount con carga selectiva - NO corrompe sistema
+  // ✅ onMout con carga selectiva - NO corrompe sistema
   const handleMount = useCallback(async (editor) => {
     editorRef.current = editor;
     addDebugInfo('🚀 Editor montado - iniciando carga selectiva');

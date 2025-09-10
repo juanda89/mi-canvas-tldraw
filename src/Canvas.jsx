@@ -85,6 +85,31 @@ export default function Canvas({ session }) {
   );
 
   // Aplica un thumbnail/metadata al asset del bookmark y ajusta tamaño
+  const ensureJpg = (urlString) => {
+    try {
+      const u = new URL(urlString);
+      if (!u.pathname.toLowerCase().endsWith('.jpg')) {
+        u.pathname = u.pathname + '.jpg';
+      }
+      return u.toString();
+    } catch {
+      return urlString.toLowerCase().endsWith('.jpg') ? urlString : urlString + '.jpg';
+    }
+  };
+
+  const refreshBookmarkShape = useCallback((editor, shapeId) => {
+    const shape = editor.getShape(shapeId);
+    if (!shape || shape.type !== 'bookmark') return;
+    const assetId = shape.props.assetId;
+    editor.run(() => {
+      editor.updateShapes([{ id: shapeId, type: 'bookmark', props: { assetId: null } }]);
+      editor.updateShapes([{ id: shapeId, type: 'bookmark', props: { assetId } }]);
+    });
+    // pequeña animación para forzar re-render en el DOM
+    editor.updateInstanceState({ isChangingStyle: true });
+    editor.timers.setTimeout(() => editor.updateInstanceState({ isChangingStyle: false }), 60);
+  }, []);
+
   const applyBookmarkMetadata = useCallback((editor, shapeId, data, pastedUrl) => {
     const shape = editor.getShape(shapeId);
     if (!shape || shape.type !== 'bookmark') return;
@@ -97,38 +122,14 @@ export default function Canvas({ session }) {
     const description = data?.description || data?.meta?.description || asset.props.description || '';
     const favicon = data?.favicon || data?.meta?.favicon || asset.props.favicon || '';
     const rawImage = data?.thumbnailUrl || data?.thumbnail_url || data?.image || data?.image_url || asset.props.image || '';
-    const imgW = Number(data?.width || data?.w) || null;
-    const imgH = Number(data?.height || data?.h) || null;
+    const finalImage = rawImage ? ensureJpg(rawImage) : rawImage;
 
-    const testLoad = (url) => new Promise((resolve) => {
-      if (!url) return resolve({ ok: false, url });
-      try {
-        const im = new Image();
-        let done = false;
-        const timer = setTimeout(() => { if (!done) { done = true; resolve({ ok: false, url }); } }, 2500);
-        im.onload = () => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: true, url }); } };
-        im.onerror = () => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: false, url }); } };
-        im.referrerPolicy = 'no-referrer';
-        im.src = url;
-      } catch { resolve({ ok: false, url }); }
+    editor.run(() => {
+      editor.updateAssets([
+        { ...asset, props: { ...asset.props, title, description, favicon, image: finalImage } }
+      ]);
     });
-
-    const makeProxy = (url) => `https://images.weserv.nl/?url=${encodeURIComponent(url)}&w=640&h=640&fit=contain`;
-
-    const applyAsset = async () => {
-      const primary = await testLoad(rawImage);
-      const finalImage = primary.ok ? primary.url : makeProxy(rawImage);
-      editor.run(() => {
-        editor.updateAssets([
-          { ...asset, props: { ...asset.props, title, description, favicon, image: finalImage } }
-        ]);
-      });
-      // Forzar re-render suave
-      editor.updateInstanceState({ isChangingStyle: true });
-      editor.timers.setTimeout(() => editor.updateInstanceState({ isChangingStyle: false }), 120);
-      return finalImage;
-    };
-    applyAsset();
+    refreshBookmarkShape(editor, shapeId);
 
     // Ajustar tamaño segun ratio (si lo sabemos)
     const fitToImage = (naturalW, naturalH) => {
@@ -144,16 +145,18 @@ export default function Canvas({ session }) {
       addDebugInfo('🖼️ Ajustado bookmark al ratio', { targetW, targetH, naturalW, naturalH });
     };
 
+    const imgW = Number(data?.width || data?.w) || null;
+    const imgH = Number(data?.height || data?.h) || null;
     if (imgW && imgH) {
       fitToImage(imgW, imgH);
     } else if (image) {
       try {
         const img = new Image();
         img.onload = () => fitToImage(img.naturalWidth, img.naturalHeight);
-        img.src = rawImage;
+        img.src = finalImage || rawImage;
       } catch {/* ignore */}
     }
-  }, [addDebugInfo]);
+  }, [addDebugInfo, refreshBookmarkShape]);
 
   // Coloca un placeholder de carga si el asset no tiene imagen aún
   const setBookmarkLoading = useCallback((editor, shapeId) => {
@@ -294,21 +297,7 @@ export default function Canvas({ session }) {
     }
     if (!assetId) return;
     // resolver imagen (prueba directa y con proxy)
-    const testLoad = (url) => new Promise((resolve) => {
-      if (!url) return resolve({ ok: false, url });
-      try {
-        const im = new Image();
-        let done = false;
-        const timer = setTimeout(() => { if (!done) { done = true; resolve({ ok: false, url }); } }, 2500);
-        im.onload = () => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: true, url }); } };
-        im.onerror = () => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: false, url }); } };
-        im.referrerPolicy = 'no-referrer';
-        im.src = url;
-      } catch { resolve({ ok: false, url }); }
-    });
-    const proxy = (url) => `https://images.weserv.nl/?url=${encodeURIComponent(url)}&w=640&h=640&fit=contain`;
-    const primary = await testLoad(inspector.asset.image);
-    const finalImage = primary.ok ? primary.url : proxy(inspector.asset.image);
+    const finalImage = ensureJpg(inspector.asset.image || '');
 
     // actualizar props del asset
     const updated = {
@@ -324,9 +313,7 @@ export default function Canvas({ session }) {
     editor.run(() => {
       editor.updateAssets([updated]);
     });
-    // Forzar re-render suave
-    editor.updateInstanceState({ isChangingStyle: true });
-    editor.timers.setTimeout(() => editor.updateInstanceState({ isChangingStyle: false }), 120);
+    refreshBookmarkShape(editor, shape.id);
     pushOverlayEvent('🖼️ Asset actualizado');
   }, [inspector, addDebugInfo, pushOverlayEvent]);
 

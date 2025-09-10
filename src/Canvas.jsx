@@ -47,14 +47,18 @@ export default function Canvas({ session }) {
   // Debug function
   const addDebugInfo = useCallback((message, data = null) => {
     const timestamp = new Date().toLocaleTimeString();
-    const debugEntry = {
-      time: timestamp,
-      message,
-      data: data ? JSON.stringify(data, null, 2) : null
+    const normalize = (d) => {
+      if (!d) return null;
+      if (d instanceof Error) {
+        return { name: d.name, message: d.message, stack: d.stack };
+      }
+      return d;
     };
-    
+    const debugEntry = { time: timestamp, message, data: normalize(data) };
+
     console.log(`🐛 [${timestamp}] ${message}`, data || '');
-    setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
+    // No truncar el historial: permitir scroll para revisar
+    setDebugInfo(prev => [...prev, debugEntry]);
   }, []);
 
   // Ventana flotante: helper para eventos breves (pegado / edge)
@@ -519,7 +523,7 @@ export default function Canvas({ session }) {
         }}>
           💡 Persistencia selectiva: Solo shapes/assets, sistema intacto
         </div>
-        {debugInfo.slice(-10).reverse().map((info, index) => (
+        {debugInfo.slice().reverse().map((info, index) => (
           <div key={index} style={{ 
             marginBottom: '4px', 
             borderBottom: '1px solid #222',
@@ -535,13 +539,16 @@ export default function Canvas({ session }) {
                 padding: '3px',
                 marginTop: '2px',
                 borderRadius: '2px',
-                maxHeight: '60px',
+                maxHeight: '140px',
                 overflow: 'auto',
                 whiteSpace: 'pre-wrap',
                 fontSize: '9px',
                 color: '#94a3b8'
               }}>
-                {info.data.substring(0, 150)}{info.data.length > 150 ? '...' : ''}
+                {typeof info.data === 'string' 
+                  ? info.data 
+                  : JSON.stringify(info.data, null, 2)
+                }
               </div>
             )}
           </div>

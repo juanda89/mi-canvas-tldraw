@@ -216,9 +216,7 @@ export default function Canvas({ session }) {
     editor.updateShapes([{ id: shapeId, type: 'bookmark', props: { w: targetW, h: targetH } }]);
   }, [LOADING_THUMB_URL]);
 
-  // Script Action - invoca Edge Function externa con url + tone
-  const SCRIPT_ACTION_ENDPOINT = 'https://yhnwqdaholmyxumoilix.supabase.co/functions/v1/script-action';
-
+  // Script Action - invoca Edge Function con auth (usa cliente supabase)
   const callScriptAction = useCallback(async (shapeId, tone) => {
     try {
       const editor = editorRef.current;
@@ -231,18 +229,15 @@ export default function Canvas({ session }) {
         return;
       }
       pushOverlayEvent(`📤 Script "${tone}" → Edge`);
-      const res = await fetch(SCRIPT_ACTION_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, tone }),
+      const { data, error } = await supabase.functions.invoke('script-action', {
+        body: { url, tone },
       });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        addDebugInfo('❌ script-action error', { status: res.status, json });
+      if (error) {
+        addDebugInfo('❌ script-action error', error);
         pushOverlayEvent('❌ script-action falló');
         return;
       }
-      addDebugInfo('✅ script-action OK', json);
+      addDebugInfo('✅ script-action OK', data);
       pushOverlayEvent('✅ Script solicitado');
     } catch (e) {
       addDebugInfo('❌ script-action excepción', e);
@@ -881,16 +876,17 @@ export default function Canvas({ session }) {
       {(() => {
         const editor = editorRef.current;
         if (!editor) return null;
-        const cam = editor.getCamera?.() || { x: 0, y: 0, z: 1 };
+        const pageToScreen = (pt) => editor.pageToScreen ? editor.pageToScreen(pt) : pt;
         const stacks = [];
         for (const [sid, meta] of Object.entries(scriptButtons)) {
           const shape = editor.getShape?.(sid);
           if (!shape || shape.type !== 'bookmark') continue;
-          const w = Number(shape?.props?.w || 300);
-          const x = Number(shape?.x || (shape?.pageX ?? 0));
-          const y = Number(shape?.y || (shape?.pageY ?? 0));
-          const left = (x + w + 12 - cam.x) * (cam.z || 1);
-          const top = (y + 8 - cam.y) * (cam.z || 1);
+          const b = editor.getShapePageBounds?.(sid);
+          if (!b) continue;
+          const anchor = { x: b.maxX + 12, y: b.minY + 8 };
+          const scr = pageToScreen(anchor);
+          const left = scr.x;
+          const top = scr.y;
           const tones = meta.tones || [];
           stacks.push(
             <div key={`tones-${sid}`} style={{ position: 'absolute', left, top, zIndex: 1003, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'auto' }}>

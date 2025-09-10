@@ -216,7 +216,7 @@ export default function Canvas({ session }) {
     editor.updateShapes([{ id: shapeId, type: 'bookmark', props: { w: targetW, h: targetH } }]);
   }, [LOADING_THUMB_URL]);
 
-  // Script Action - invoca Edge Function con auth (usa cliente supabase)
+  // Script Action - invoca Edge Function externa (con Authorization del usuario)
   const callScriptAction = useCallback(async (shapeId, tone) => {
     try {
       const editor = editorRef.current;
@@ -229,21 +229,28 @@ export default function Canvas({ session }) {
         return;
       }
       pushOverlayEvent(`📤 Script "${tone}" → Edge`);
-      const { data, error } = await supabase.functions.invoke('script-action', {
-        body: { url, tone },
+      const token = (session?.access_token) || (await supabase.auth.getSession().then(r => r.data.session?.access_token));
+      const res = await fetch('https://yhnwqdaholmyxumoilix.supabase.co/functions/v1/script-action', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ url, tone }),
       });
-      if (error) {
-        addDebugInfo('❌ script-action error', error);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        addDebugInfo('❌ script-action error', { status: res.status, json });
         pushOverlayEvent('❌ script-action falló');
         return;
       }
-      addDebugInfo('✅ script-action OK', data);
+      addDebugInfo('✅ script-action OK', json);
       pushOverlayEvent('✅ Script solicitado');
     } catch (e) {
       addDebugInfo('❌ script-action excepción', e);
       pushOverlayEvent('❌ script-action excepción');
     }
-  }, [scriptButtons, pushOverlayEvent, addDebugInfo]);
+  }, [scriptButtons, pushOverlayEvent, addDebugInfo, session?.access_token]);
 
   // Utilidades de espera para robustecer la detección del shape/asset
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -442,13 +449,16 @@ export default function Canvas({ session }) {
     return {
       shapes: userShapes,
       assets: userAssets,
+      extensions: {
+        scriptButtons: scriptButtons,
+      },
       metadata: {
         shapesCount: Object.keys(userShapes).length,
         assetsCount: Object.keys(userAssets).length,
         savedAt: new Date().toISOString()
       }
     };
-  }, []);
+  }, [scriptButtons]);
 
   // ✅ NUEVO: Cargar solo shapes sin tocar configuraciones del sistema
   const loadUserShapes = useCallback((userData) => {
@@ -568,6 +578,41 @@ export default function Canvas({ session }) {
       }
     };
   }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
+
+  // ✅ Guardar cuando cambia la botonera (scriptButtons), aunque no cambie el store
+  useEffect(() => {
+    if (!isReady) return;
+    try {
+      if (saveTimeout.current) clearTimeout(saveTimeout.current);
+      saveTimeout.current = setTimeout(async () => {
+        try {
+          addDebugInfo('💾 Guardando cambios de scriptButtons...');
+          const snapshot = store.getSnapshot();
+          if (!snapshot?.store) return;
+          const userData = extractUserData(snapshot);
+          const { data: updateData, error: updateError } = await supabase
+            .from('canvas_states')
+            .update({ data: userData, updated_at: new Date().toISOString() })
+            .eq('user_id', session.user.id)
+            .select();
+          if (updateError) {
+            addDebugInfo('❌ Error guardando scriptButtons (UPDATE)', updateError);
+            return;
+          }
+          if (!updateData || updateData.length === 0) {
+            const { error: insertError } = await supabase
+              .from('canvas_states')
+              .insert({ user_id: session.user.id, data: userData, updated_at: new Date().toISOString() });
+            if (insertError) addDebugInfo('❌ Error guardando scriptButtons (INSERT)', insertError);
+          } else {
+            addDebugInfo('✅ scriptButtons guardados');
+          }
+        } catch (e) {
+          addDebugInfo('❌ Error en persistencia de scriptButtons', e);
+        }
+      }, 600);
+    } catch {/* ignore */}
+  }, [isReady, store, session.user.id, extractUserData, addDebugInfo, scriptButtons]);
 
   // Listener global de paste (solo debug visual, no altera comportamiento)
   useEffect(() => {
@@ -750,6 +795,10 @@ export default function Canvas({ session }) {
       const userData = await loadUserData();
       if (userData) {
         loadUserShapes(userData); // ✅ Carga selectiva sin tocar sistema
+        if (userData.extensions?.scriptButtons) {
+          setScriptButtons(userData.extensions.scriptButtons);
+          addDebugInfo('🎛️ scriptButtons restaurados', { count: Object.keys(userData.extensions.scriptButtons || {}).length });
+        }
         addDebugInfo('✅ Contenido del usuario cargado selectivamente');
       }
 

@@ -47,16 +47,14 @@ export default function Canvas({ session }) {
   // Debug function (persistente + errores detallados)
   const addDebugInfo = useCallback((message, data = null) => {
     const timestamp = new Date().toLocaleTimeString();
-    const normalize = (d) => {
-      if (!d) return null;
-      if (d instanceof Error) return { name: d.name, message: d.message, stack: d.stack };
-      return d;
+    const debugEntry = {
+      time: timestamp,
+      message,
+      data: data ? JSON.stringify(data, null, 2) : null
     };
-    const debugEntry = { time: timestamp, message, data: normalize(data) };
-
+    
     console.log(`🐛 [${timestamp}] ${message}`, data || '');
-    // No truncar: la UI ya es scrolleable
-    setDebugInfo(prev => [...prev, debugEntry]);
+    setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
   }, []);
 
   // Ventana flotante: helper para eventos breves (pegado / edge)
@@ -531,7 +529,7 @@ export default function Canvas({ session }) {
         }}>
           💡 Persistencia selectiva: Solo shapes/assets, sistema intacto
         </div>
-        {debugInfo.slice().reverse().map((info, index) => (
+        {debugInfo.slice(-10).reverse().map((info, index) => (
           <div key={index} style={{ 
             marginBottom: '4px', 
             borderBottom: '1px solid #222',
@@ -547,13 +545,13 @@ export default function Canvas({ session }) {
                 padding: '3px',
                 marginTop: '2px',
                 borderRadius: '2px',
-                maxHeight: '160px',
+                maxHeight: '60px',
                 overflow: 'auto',
                 whiteSpace: 'pre-wrap',
                 fontSize: '9px',
                 color: '#94a3b8'
               }}>
-                {typeof info.data === 'string' ? info.data : JSON.stringify(info.data, null, 2)}
+                {info.data.substring(0, 150)}{info.data.length > 150 ? '...' : ''}
               </div>
             )}
           </div>

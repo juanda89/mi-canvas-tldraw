@@ -44,17 +44,21 @@ export default function Canvas({ session }) {
     return cleanStore;
   });
 
-  // Debug function (persistente + errores detallados)
+  // Debug function
   const addDebugInfo = useCallback((message, data = null) => {
     const timestamp = new Date().toLocaleTimeString();
-    const debugEntry = {
-      time: timestamp,
-      message,
-      data: data ? JSON.stringify(data, null, 2) : null
+    const normalize = (d) => {
+      if (!d) return null;
+      if (d instanceof Error) {
+        return { name: d.name, message: d.message, stack: d.stack };
+      }
+      return d;
     };
-    
+    const debugEntry = { time: timestamp, message, data: normalize(data) };
+
     console.log(`🐛 [${timestamp}] ${message}`, data || '');
-    setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
+    // No truncar el historial: permitir scroll para revisar
+    setDebugInfo(prev => [...prev, debugEntry]);
   }, []);
 
   // Ventana flotante: helper para eventos breves (pegado / edge)
@@ -484,13 +488,13 @@ export default function Canvas({ session }) {
         </button>
       </div>
 
-      {/* Debug panel persistente */}
+      {/* Debug panel mejorado */}
       <div style={{
         position: 'absolute',
         top: '40px',
         right: '10px',
         width: '320px',
-        maxHeight: '380px',
+        maxHeight: '300px',
         backgroundColor: 'rgba(0, 0, 0, 0.95)',
         color: 'white',
         padding: '8px',
@@ -500,18 +504,8 @@ export default function Canvas({ session }) {
         zIndex: 1001,
         fontFamily: 'monospace'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
-          <span>🐛 Debug ({debugInfo.length}) - Status: {loading ? '⏳ Loading' : '✅ Ready'}</span>
-          <span style={{ display: 'flex', gap: '6px' }}>
-            <button
-              onClick={() => navigator.clipboard?.writeText(JSON.stringify(debugInfo, null, 2)).catch(() => {})}
-              style={{ pointerEvents: 'auto', fontSize: '10px', padding: '2px 6px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px' }}
-            >Copy</button>
-            <button
-              onClick={() => setDebugInfo([])}
-              style={{ pointerEvents: 'auto', fontSize: '10px', padding: '2px 6px', background: '#ef4444', color: 'white', border: '1px solid #b91c1c', borderRadius: '4px' }}
-            >Clear</button>
-          </span>
+        <div style={{ fontWeight: 'bold', marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '4px' }}>
+          🐛 Debug ({debugInfo.length}) - Status: {loading ? '⏳ Loading' : '✅ Ready'}
         </div>
         <div style={{ 
           marginBottom: '8px', 
@@ -529,7 +523,7 @@ export default function Canvas({ session }) {
         }}>
           💡 Persistencia selectiva: Solo shapes/assets, sistema intacto
         </div>
-        {debugInfo.slice(-10).reverse().map((info, index) => (
+        {debugInfo.slice().reverse().map((info, index) => (
           <div key={index} style={{ 
             marginBottom: '4px', 
             borderBottom: '1px solid #222',
@@ -545,13 +539,16 @@ export default function Canvas({ session }) {
                 padding: '3px',
                 marginTop: '2px',
                 borderRadius: '2px',
-                maxHeight: '60px',
+                maxHeight: '140px',
                 overflow: 'auto',
                 whiteSpace: 'pre-wrap',
                 fontSize: '9px',
                 color: '#94a3b8'
               }}>
-                {info.data.substring(0, 150)}{info.data.length > 150 ? '...' : ''}
+                {typeof info.data === 'string' 
+                  ? info.data 
+                  : JSON.stringify(info.data, null, 2)
+                }
               </div>
             )}
           </div>
@@ -579,7 +576,7 @@ export default function Canvas({ session }) {
         </div>
       )}
 
-      {/* Ventana flotante infrior-izquierda (debug rápido de paste/edge) */}
+      {/* Ventana flotante inferior-izquierda (debug rápido de paste/edge) */}
       <div style={{
         position: 'absolute',
         left: '10px',

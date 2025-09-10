@@ -29,6 +29,7 @@ export default function Canvas({ session }) {
   const [isReady, setIsReady] = useState(false);
   const [overlayEvents, setOverlayEvents] = useState([]);
   const [scriptButtons, setScriptButtons] = useState({}); // { [shapeId]: { url, tones: string[], platform, pos?: { left, top } } }
+  const [uiTick, setUiTick] = useState(0); // raf ticker para overlays
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
   
@@ -94,7 +95,34 @@ export default function Canvas({ session }) {
     }, 8000);
   }, []);
 
-  // Eliminado: no reposicionar en pan/zoom para evitar lag
+  // Re-render por frame con requestAnimationFrame para seguir pan/zoom sin lag
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      setUiTick((v) => (v + 1) % 1000000);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // Limpia botones si su bookmark ya no existe
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const toDelete = [];
+    for (const sid of Object.keys(scriptButtons)) {
+      const sh = editor.getShape?.(sid);
+      if (!sh || sh.type !== 'bookmark') toDelete.push(sid);
+    }
+    if (toDelete.length) {
+      setScriptButtons((prev) => {
+        const next = { ...prev };
+        toDelete.forEach((id) => delete next[id]);
+        return next;
+      });
+    }
+  }, [uiTick, scriptButtons]);
 
   // GIF de loading para bookmark mientras llega el Edge
   const LOADING_THUMB_URL = 'https://res.cloudinary.com/dbo31spki/image/upload/v1757525443/Mad_Hip_Hop_GIF_by_Universal_Music_India_nw52wx.gif';
@@ -935,49 +963,61 @@ export default function Canvas({ session }) {
       </div>
 
       {/* Botoneras de tonos junto a cada bookmark con datos del Edge */}
-      {Object.entries(scriptButtons).map(([sid, meta]) => {
-        const tones = meta.tones || [];
-        const pos = meta.pos;
-        if (!pos) return null;
-        return (
-          <div
-            key={`tones-${sid}`}
-            style={{
-              position: 'absolute',
-              left: pos.left,
-              top: pos.top,
-              zIndex: 1003,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              pointerEvents: 'auto',
-            }}
-          >
-            {tones.map((tone, idx) => (
-              <button
-                key={`tone-${sid}-${idx}`}
-                onClick={() => callScriptAction(sid, tone)}
-                title={`Generar script (${tone})`}
-                style={{
-                  height: 28,
-                  padding: '0 12px',
-                  borderRadius: 9999,
-                  border: '1px solid rgba(56,127,255,0.50)',
-                  background: 'rgba(11,18,32,0.85)',
-                  color: '#E5E7EB',
-                  fontSize: 12,
-                  letterSpacing: 0.2,
-                  backdropFilter: 'blur(2px)',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-                  cursor: 'pointer'
-                }}
-              >
-                {tone}
-              </button>
-            ))}
-          </div>
-        );
-      })}
+      {(() => {
+        const editor = editorRef.current;
+        if (!editor) return null;
+        const stacks = [];
+        for (const [sid, meta] of Object.entries(scriptButtons)) {
+          const shape = editor.getShape?.(sid);
+          if (!shape || shape.type !== 'bookmark') continue;
+          const b = editor.getShapePageBounds?.(sid);
+          if (!b) continue;
+          const anchor = { x: b.maxX + 12, y: b.minY + 8 };
+          const scr = editor.pageToScreen ? editor.pageToScreen(anchor) : anchor;
+          const cam = editor.getCamera?.() || { z: 1 };
+          const s = Math.max(0.2, cam.z || 1); // escala instantánea con zoom
+          const tones = meta.tones || [];
+          stacks.push(
+            <div
+              key={`tones-${sid}`}
+              style={{
+                position: 'absolute',
+                left: scr.x,
+                top: scr.y,
+                zIndex: 1003,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: Math.max(4, Math.round(8 * s)),
+                pointerEvents: 'auto',
+              }}
+            >
+              {tones.map((tone, idx) => (
+                <button
+                  key={`tone-${sid}-${idx}`}
+                  onClick={() => callScriptAction(sid, tone)}
+                  title={`Generar script (${tone})`}
+                  style={{
+                    height: Math.max(16, Math.round(28 * s)),
+                    padding: `0 ${Math.max(8, Math.round(12 * s))}px`,
+                    borderRadius: 9999,
+                    border: `${Math.max(1, Math.round(1 * s))}px solid rgba(56,127,255,0.50)`,
+                    background: 'rgba(11,18,32,0.85)',
+                    color: '#E5E7EB',
+                    fontSize: Math.max(10, Math.round(12 * s)),
+                    letterSpacing: 0.2,
+                    backdropFilter: 'blur(2px)',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {tone}
+                </button>
+              ))}
+            </div>
+          );
+        }
+        return stacks;
+      })()}
 
       {/* Debug panel persistente */}
       <div style={{

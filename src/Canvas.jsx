@@ -28,6 +28,8 @@ export default function Canvas({ session }) {
   const [debugInfo, setDebugInfo] = useState([]);
   const [isReady, setIsReady] = useState(false);
   const [overlayEvents, setOverlayEvents] = useState([]);
+  const [scriptButtons, setScriptButtons] = useState({}); // { [shapeId]: { url, tones: string[], platform } }
+  const [uiTick, setUiTick] = useState(0); // re-render ticker para overlays
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
   
@@ -57,6 +59,29 @@ export default function Canvas({ session }) {
     setDebugInfo(prev => [...prev, debugEntry]);
   }, []);
 
+  // Tonos disponibles para el generador de guiones
+  const TONE_OPTIONS = [
+    'Alegre',
+    'Divertido',
+    'Profesional',
+    'Emotivo',
+    'Inspirador',
+    'Informativo',
+    'Irónico',
+    'Motivador',
+    'Romántico',
+    'Dramático',
+  ];
+
+  const pickRandomTones = (n = 4) => {
+    const arr = [...TONE_OPTIONS];
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr.slice(0, n);
+  };
+
   // Ventana flotante: helper para eventos breves (pegado / edge)
   const pushOverlayEvent = useCallback((text) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -68,6 +93,12 @@ export default function Canvas({ session }) {
     setTimeout(() => {
       setOverlayEvents((prev) => prev.filter((e) => e.id !== id));
     }, 8000);
+  }, []);
+
+  // Re-render periódico para reposicionar overlays (panning/zoom)
+  useEffect(() => {
+    const t = setInterval(() => setUiTick((v) => v + 1), 250);
+    return () => clearInterval(t);
   }, []);
 
   // GIF de loading para bookmark mientras llega el Edge
@@ -184,6 +215,40 @@ export default function Canvas({ session }) {
     const targetH = 180 + 80;
     editor.updateShapes([{ id: shapeId, type: 'bookmark', props: { w: targetW, h: targetH } }]);
   }, [LOADING_THUMB_URL]);
+
+  // Script Action - invoca Edge Function externa con url + tone
+  const SCRIPT_ACTION_ENDPOINT = 'https://yhnwqdaholmyxumoilix.supabase.co/functions/v1/script-action';
+
+  const callScriptAction = useCallback(async (shapeId, tone) => {
+    try {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const shape = editor.getShape(shapeId);
+      if (!shape || shape.type !== 'bookmark') return;
+      const url = shape.props?.url || scriptButtons[shapeId]?.url;
+      if (!url) {
+        pushOverlayEvent('⚠️ No hay URL para este bookmark');
+        return;
+      }
+      pushOverlayEvent(`📤 Script "${tone}" → Edge`);
+      const res = await fetch(SCRIPT_ACTION_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, tone }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        addDebugInfo('❌ script-action error', { status: res.status, json });
+        pushOverlayEvent('❌ script-action falló');
+        return;
+      }
+      addDebugInfo('✅ script-action OK', json);
+      pushOverlayEvent('✅ Script solicitado');
+    } catch (e) {
+      addDebugInfo('❌ script-action excepción', e);
+      pushOverlayEvent('❌ script-action excepción');
+    }
+  }, [scriptButtons, pushOverlayEvent, addDebugInfo]);
 
   // Utilidades de espera para robustecer la detección del shape/asset
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -654,6 +719,15 @@ export default function Canvas({ session }) {
                   setEdgeDataVersion((v) => v + 1);
                   addDebugInfo('💾 Edge data guardado para inspector', { shapeId, pastedUrl });
                 } catch {/* ignore */}
+                // Añadir botones de tonos si es Instagram o TikTok
+                if (shapeId && (platform === 'instagram' || platform === 'tiktok')) {
+                  const tones = pickRandomTones(4);
+                  setScriptButtons((prev) => ({
+                    ...prev,
+                    [shapeId]: { url: pastedUrl, tones, platform },
+                  }));
+                  addDebugInfo('🎛️ Botonera de tonos creada', { shapeId, tones });
+                }
                 // Aplicar automáticamente metadata del Edge a bookmark
                 if (shapeId) {
                   try {
@@ -802,6 +876,51 @@ export default function Canvas({ session }) {
           🗃️ DB
         </button>
       </div>
+
+      {/* Botoneras de tonos junto a cada bookmark con datos del Edge */}
+      {(() => {
+        const editor = editorRef.current;
+        if (!editor) return null;
+        const cam = editor.getCamera?.() || { x: 0, y: 0, z: 1 };
+        const stacks = [];
+        for (const [sid, meta] of Object.entries(scriptButtons)) {
+          const shape = editor.getShape?.(sid);
+          if (!shape || shape.type !== 'bookmark') continue;
+          const w = Number(shape?.props?.w || 300);
+          const x = Number(shape?.x || (shape?.pageX ?? 0));
+          const y = Number(shape?.y || (shape?.pageY ?? 0));
+          const left = (x + w + 12 - cam.x) * (cam.z || 1);
+          const top = (y + 8 - cam.y) * (cam.z || 1);
+          const tones = meta.tones || [];
+          stacks.push(
+            <div key={`tones-${sid}`} style={{ position: 'absolute', left, top, zIndex: 1003, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'auto' }}>
+              {tones.map((tone, idx) => (
+                <button
+                  key={`tone-${sid}-${idx}`}
+                  onClick={() => callScriptAction(sid, tone)}
+                  title={`Generar script (${tone})`}
+                  style={{
+                    height: 28,
+                    padding: '0 12px',
+                    borderRadius: 9999,
+                    border: '1px solid rgba(56,127,255,0.50)',
+                    background: 'rgba(11,18,32,0.85)',
+                    color: '#E5E7EB',
+                    fontSize: 12,
+                    letterSpacing: 0.2,
+                    backdropFilter: 'blur(2px)',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {tone}
+                </button>
+              ))}
+            </div>
+          );
+        }
+        return stacks;
+      })()}
 
       {/* Debug panel persistente */}
       <div style={{

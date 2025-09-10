@@ -70,6 +70,9 @@ export default function Canvas({ session }) {
     }, 8000);
   }, []);
 
+  // GIF de loading para bookmark mientras llega el Edge
+  const LOADING_THUMB_URL = 'https://res.cloudinary.com/dbo31spki/image/upload/v1757525443/Mad_Hip_Hop_GIF_by_Universal_Music_India_nw52wx.gif';
+
   // Placeholder inline SVG para loading en el bookmark
   const LOADING_SVG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270" viewBox="0 0 480 270">
@@ -172,15 +175,16 @@ export default function Canvas({ session }) {
     const asset = editor.getAsset(assetId);
     if (!asset) return;
     if (asset.props.image) return; // ya tiene imagen
+    // Usar GIF de Cloudinary como placeholder de loading
     editor.updateAssets([
-      { ...asset, props: { ...asset.props, image: LOADING_SVG, title: asset.props.title || '', description: asset.props.description || '' } }
+      { ...asset, props: { ...asset.props, image: LOADING_THUMB_URL, title: asset.props.title || '', description: asset.props.description || '' } }
     ]);
     // Altura de carga por defecto
     const current = editor.getShape(shapeId);
     const targetW = current?.props?.w || 300;
     const targetH = 180 + 80;
     editor.updateShapes([{ id: shapeId, type: 'bookmark', props: { w: targetW, h: targetH } }]);
-  }, [LOADING_SVG]);
+  }, [LOADING_THUMB_URL]);
 
   // Utilidades de espera para robustecer la detección del shape/asset
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -601,8 +605,18 @@ export default function Canvas({ session }) {
             if (selShape?.type === 'bookmark') shapeId = selShape.id;
           }
 
-          // (Desactivado) Placeholder automático. Usaremos editor manual.
-          if (!shapeId) {
+          // Si localizamos el bookmark, aplicar thumbnail de loading (GIF)
+          if (shapeId) {
+            try {
+              const ok = await waitForAssetOnShape(editor, shapeId, 30, 60);
+              if (ok) {
+                setBookmarkLoading(editor, shapeId);
+                addDebugInfo('⏳ Thumbnail de loading aplicado al bookmark', { shapeId });
+              }
+            } catch (e) {
+              addDebugInfo('⚠️ No se pudo aplicar thumbnail de loading', e);
+            }
+          } else {
             addDebugInfo('⚠️ No se pudo localizar bookmark para URL', { url: pastedUrl });
           }
 

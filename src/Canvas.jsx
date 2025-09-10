@@ -28,8 +28,7 @@ export default function Canvas({ session }) {
   const [debugInfo, setDebugInfo] = useState([]);
   const [isReady, setIsReady] = useState(false);
   const [overlayEvents, setOverlayEvents] = useState([]);
-  const [scriptButtons, setScriptButtons] = useState({}); // { [shapeId]: { url, tones: string[], platform } }
-  const [uiTick, setUiTick] = useState(0); // re-render ticker para overlays
+  const [scriptButtons, setScriptButtons] = useState({}); // { [shapeId]: { url, tones: string[], platform, pos?: { left, top } } }
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
   
@@ -95,11 +94,7 @@ export default function Canvas({ session }) {
     }, 8000);
   }, []);
 
-  // Re-render periódico para reposicionar overlays (panning/zoom)
-  useEffect(() => {
-    const t = setInterval(() => setUiTick((v) => v + 1), 250);
-    return () => clearInterval(t);
-  }, []);
+  // Eliminado: no reposicionar en pan/zoom para evitar lag
 
   // GIF de loading para bookmark mientras llega el Edge
   const LOADING_THUMB_URL = 'https://res.cloudinary.com/dbo31spki/image/upload/v1757525443/Mad_Hip_Hop_GIF_by_Universal_Music_India_nw52wx.gif';
@@ -755,11 +750,21 @@ export default function Canvas({ session }) {
                 // Añadir botones de tonos si es Instagram o TikTok
                 if (shapeId && (platform === 'instagram' || platform === 'tiktok')) {
                   const tones = pickRandomTones(4);
-                  setScriptButtons((prev) => ({
-                    ...prev,
-                    [shapeId]: { url: pastedUrl, tones, platform },
-                  }));
-                  addDebugInfo('🎛️ Botonera de tonos creada', { shapeId, tones });
+                  try {
+                    const b = editor.getShapePageBounds?.(shapeId);
+                    const pageToScreen = (pt) => editor.pageToScreen ? editor.pageToScreen(pt) : pt;
+                    const anchor = b ? { x: b.maxX + 12, y: b.minY + 8 } : null;
+                    const scr = anchor ? pageToScreen(anchor) : { x: 40, y: 40 };
+                    setScriptButtons((prev) => ({
+                      ...prev,
+                      [shapeId]: { url: pastedUrl, tones, platform, pos: { left: scr.x, top: scr.y } },
+                    }));
+                    addDebugInfo('🎛️ Botonera de tonos creada', { shapeId, tones, pos: { left: scr.x, top: scr.y } });
+                  } catch (e) {
+                    const tones2 = tones; // fallback sin posición
+                    setScriptButtons((prev) => ({ ...prev, [shapeId]: { url: pastedUrl, tones: tones2, platform } }));
+                    addDebugInfo('🎛️ Botonera creada (sin pos)', { shapeId, tones: tones2 });
+                  }
                 }
                 // Aplicar automáticamente metadata del Edge a bookmark
                 if (shapeId) {
@@ -789,8 +794,23 @@ export default function Canvas({ session }) {
       if (userData) {
         loadUserShapes(userData); // ✅ Carga selectiva sin tocar sistema
         if (userData.extensions?.scriptButtons) {
-          setScriptButtons(userData.extensions.scriptButtons);
-          addDebugInfo('🎛️ scriptButtons restaurados', { count: Object.keys(userData.extensions.scriptButtons || {}).length });
+          // Restaura botones y calcula posición inicial si falta
+          const restored = userData.extensions.scriptButtons;
+          const editor = editorRef.current;
+          if (editor) {
+            const pageToScreen = (pt) => editor.pageToScreen ? editor.pageToScreen(pt) : pt;
+            const withPos = Object.fromEntries(Object.entries(restored).map(([sid, meta]) => {
+              if (meta?.pos) return [sid, meta];
+              const b = editor.getShapePageBounds?.(sid);
+              if (!b) return [sid, meta];
+              const scr = pageToScreen({ x: b.maxX + 12, y: b.minY + 8 });
+              return [sid, { ...meta, pos: { left: scr.x, top: scr.y } }];
+            }));
+            setScriptButtons(withPos);
+            addDebugInfo('🎛️ scriptButtons restaurados', { count: Object.keys(withPos).length });
+          } else {
+            setScriptButtons(restored);
+          }
         }
         addDebugInfo('✅ Contenido del usuario cargado selectivamente');
       }
@@ -915,64 +935,49 @@ export default function Canvas({ session }) {
       </div>
 
       {/* Botoneras de tonos junto a cada bookmark con datos del Edge */}
-      {(() => {
-        const editor = editorRef.current;
-        if (!editor) return null;
-        const pageToScreen = (pt) => editor.pageToScreen ? editor.pageToScreen(pt) : pt;
-        const stacks = [];
-        for (const [sid, meta] of Object.entries(scriptButtons)) {
-          const shape = editor.getShape?.(sid);
-          if (!shape || shape.type !== 'bookmark') continue;
-          const b = editor.getShapePageBounds?.(sid);
-          if (!b) continue;
-          const cam = editor.getCamera?.() || { z: 1 };
-          const s = Math.max(0.2, cam.z || 1); // escala segun zoom (más pequeño al alejar)
-          const anchor = { x: b.maxX + 12, y: b.minY + 8 };
-          const scr = pageToScreen(anchor);
-          const left = scr.x;
-          const top = scr.y;
-          const tones = meta.tones || [];
-          stacks.push(
-            <div
-              key={`tones-${sid}`}
-              style={{
-                position: 'absolute',
-                left,
-                top,
-                zIndex: 1003,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: Math.max(4, Math.round(8 * s)),
-                pointerEvents: 'auto',
-              }}
-            >
-              {tones.map((tone, idx) => (
-                <button
-                  key={`tone-${sid}-${idx}`}
-                  onClick={() => callScriptAction(sid, tone)}
-                  title={`Generar script (${tone})`}
-                  style={{
-                    height: Math.max(16, Math.round(28 * s)),
-                    padding: `0 ${Math.max(8, Math.round(12 * s))}px`,
-                    borderRadius: 9999,
-                    border: `${Math.max(1, Math.round(1 * s))}px solid rgba(56,127,255,0.50)`,
-                    background: 'rgba(11,18,32,0.85)',
-                    color: '#E5E7EB',
-                    fontSize: Math.max(10, Math.round(12 * s)),
-                    letterSpacing: 0.2,
-                    backdropFilter: 'blur(2px)',
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
-                    cursor: 'pointer'
-                  }}
-                >
-                  {tone}
-                </button>
-              ))}
-            </div>
-          );
-        }
-        return stacks;
-      })()}
+      {Object.entries(scriptButtons).map(([sid, meta]) => {
+        const tones = meta.tones || [];
+        const pos = meta.pos;
+        if (!pos) return null;
+        return (
+          <div
+            key={`tones-${sid}`}
+            style={{
+              position: 'absolute',
+              left: pos.left,
+              top: pos.top,
+              zIndex: 1003,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              pointerEvents: 'auto',
+            }}
+          >
+            {tones.map((tone, idx) => (
+              <button
+                key={`tone-${sid}-${idx}`}
+                onClick={() => callScriptAction(sid, tone)}
+                title={`Generar script (${tone})`}
+                style={{
+                  height: 28,
+                  padding: '0 12px',
+                  borderRadius: 9999,
+                  border: '1px solid rgba(56,127,255,0.50)',
+                  background: 'rgba(11,18,32,0.85)',
+                  color: '#E5E7EB',
+                  fontSize: 12,
+                  letterSpacing: 0.2,
+                  backdropFilter: 'blur(2px)',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                  cursor: 'pointer'
+                }}
+              >
+                {tone}
+              </button>
+            ))}
+          </div>
+        );
+      })}
 
       {/* Debug panel persistente */}
       <div style={{

@@ -229,28 +229,21 @@ export default function Canvas({ session }) {
         return;
       }
       pushOverlayEvent(`📤 Script "${tone}" → Edge`);
-      const token = (session?.access_token) || (await supabase.auth.getSession().then(r => r.data.session?.access_token));
-      const res = await fetch('https://yhnwqdaholmyxumoilix.supabase.co/functions/v1/script-action', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ url, script: tone }),
+      const { data, error } = await supabase.functions.invoke('script-action', {
+        body: { url, script: tone },
       });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        addDebugInfo('❌ script-action error', { status: res.status, json });
+      if (error) {
+        addDebugInfo('❌ script-action error', error);
         pushOverlayEvent('❌ script-action falló');
         return;
       }
-      addDebugInfo('✅ script-action OK', json);
+      addDebugInfo('✅ script-action OK', data);
       pushOverlayEvent('✅ Script solicitado');
     } catch (e) {
       addDebugInfo('❌ script-action excepción', e);
       pushOverlayEvent('❌ script-action excepción');
     }
-  }, [scriptButtons, pushOverlayEvent, addDebugInfo, session?.access_token]);
+  }, [scriptButtons, pushOverlayEvent, addDebugInfo]);
 
   // Utilidades de espera para robustecer la detección del shape/asset
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -569,7 +569,7 @@ export default function Canvas({ session }) {
         </div>
       )}
 
-      {/* Ventana flotante inferior-izquierda (debug rápido de paste/edge) */}
+      {/* Ventana flotante infrior-izquierda (debug rápido de paste/edge) */}
       <div style={{
         position: 'absolute',
         left: '10px',

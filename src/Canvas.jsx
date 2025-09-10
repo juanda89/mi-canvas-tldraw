@@ -236,7 +236,7 @@ export default function Canvas({ session }) {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ url, tone }),
+        body: JSON.stringify({ url, script: tone }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -932,26 +932,40 @@ export default function Canvas({ session }) {
           if (!shape || shape.type !== 'bookmark') continue;
           const b = editor.getShapePageBounds?.(sid);
           if (!b) continue;
+          const cam = editor.getCamera?.() || { z: 1 };
+          const s = Math.max(0.2, cam.z || 1); // escala segun zoom (más pequeño al alejar)
           const anchor = { x: b.maxX + 12, y: b.minY + 8 };
           const scr = pageToScreen(anchor);
           const left = scr.x;
           const top = scr.y;
           const tones = meta.tones || [];
           stacks.push(
-            <div key={`tones-${sid}`} style={{ position: 'absolute', left, top, zIndex: 1003, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'auto' }}>
+            <div
+              key={`tones-${sid}`}
+              style={{
+                position: 'absolute',
+                left,
+                top,
+                zIndex: 1003,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: Math.max(4, Math.round(8 * s)),
+                pointerEvents: 'auto',
+              }}
+            >
               {tones.map((tone, idx) => (
                 <button
                   key={`tone-${sid}-${idx}`}
                   onClick={() => callScriptAction(sid, tone)}
                   title={`Generar script (${tone})`}
                   style={{
-                    height: 28,
-                    padding: '0 12px',
+                    height: Math.max(16, Math.round(28 * s)),
+                    padding: `0 ${Math.max(8, Math.round(12 * s))}px`,
                     borderRadius: 9999,
-                    border: '1px solid rgba(56,127,255,0.50)',
+                    border: `${Math.max(1, Math.round(1 * s))}px solid rgba(56,127,255,0.50)`,
                     background: 'rgba(11,18,32,0.85)',
                     color: '#E5E7EB',
-                    fontSize: 12,
+                    fontSize: Math.max(10, Math.round(12 * s)),
                     letterSpacing: 0.2,
                     backdropFilter: 'blur(2px)',
                     boxShadow: '0 2px 8px rgba(0,0,0,0.35)',

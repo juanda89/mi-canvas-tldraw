@@ -158,6 +158,33 @@ export default function Canvas({ session }) {
     editor.updateShapes([{ id: shapeId, type: 'bookmark', props: { w: targetW, h: targetH } }]);
   }, [LOADING_SVG]);
 
+  // Utilidades de espera para robustecer la detección del shape/asset
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const waitForBookmarkShape = useCallback(async (editor, pastedUrl, beforeIds, attempts = 20, interval = 50) => {
+    for (let i = 0; i < attempts; i++) {
+      const shapes = editor.getCurrentPageShapes();
+      const candidates = shapes.filter((s) => s.type === 'bookmark' && s.props?.url === pastedUrl);
+      // prioriza shapes nuevos si tenemos beforeIds
+      const newOnes = beforeIds ? candidates.filter((s) => !beforeIds.has(s.id)) : candidates;
+      const chosen = newOnes[0] || candidates[0];
+      if (chosen) return chosen.id;
+      await delay(interval);
+    }
+    return null;
+  }, []);
+
+  const waitForAssetOnShape = useCallback(async (editor, shapeId, attempts = 40, interval = 50) => {
+    for (let i = 0; i < attempts; i++) {
+      const shape = editor.getShape(shapeId);
+      const assetId = shape?.props?.assetId;
+      const asset = assetId ? editor.getAsset(assetId) : null;
+      if (assetId && asset) return { assetId, asset };
+      await delay(interval);
+    }
+    return null;
+  }, []);
+
   // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
   const extractUserData = useCallback((snapshot) => {
     const userShapes = {};
@@ -389,26 +416,23 @@ export default function Canvas({ session }) {
             await originalUrlHandler(externalContent);
           }
 
-          let shapeId = null;
-          try {
-            // Esperar al siguiente frame para asegurar creación
-            await new Promise((r) => requestAnimationFrame(() => r()));
-            const afterShapes = editor.getCurrentPageShapes();
-            const newShapes = afterShapes.filter((s) => !beforeIds.has(s.id));
-            const bookmark = newShapes.find((s) => s.type === 'bookmark') || afterShapes.find((s) => s.type === 'bookmark' && s.props?.url === pastedUrl);
-            if (bookmark) {
-              shapeId = bookmark.id;
-            } else {
-              // fallback: usar selección actual si coincide
-              const sel = editor.getSelectedShapeIds()[0];
-              const selShape = sel ? editor.getShape(sel) : null;
-              if (selShape?.type === 'bookmark') shapeId = selShape.id;
-            }
-          } catch (_) {}
+          // Buscar el bookmark correspondiente (robusto con reintentos)
+          let shapeId = await waitForBookmarkShape(editor, pastedUrl, beforeIds, 30, 60);
+          if (!shapeId) {
+            // como fallback, usa selección actual si es bookmark
+            const sel = editor.getSelectedShapeIds()[0];
+            const selShape = sel ? editor.getShape(sel) : null;
+            if (selShape?.type === 'bookmark') shapeId = selShape.id;
+          }
 
           // Colocar placeholder de loading mientras llega la metadata real
           if (shapeId) {
-            try { setBookmarkLoading(editor, shapeId); } catch {/* ignore */}
+            try {
+              const ok = await waitForAssetOnShape(editor, shapeId, 40, 60);
+              if (ok) setBookmarkLoading(editor, shapeId);
+            } catch {/* ignore */}
+          } else {
+            addDebugInfo('⚠️ No se pudo localizar bookmark para URL', { url: pastedUrl });
           }
 
           // Invocar Edge Function con los 3 parámetros requeridos
@@ -441,7 +465,11 @@ export default function Canvas({ session }) {
                 pushOverlayEvent('✅ Edge Function OK');
                 // Actualizar bookmark con thumbnail + meta y ajustar tamaño
                 if (shapeId) {
+                  // asegurarnos que el asset exista
+                  await waitForAssetOnShape(editor, shapeId, 40, 60);
                   applyBookmarkMetadata(editor, shapeId, data, pastedUrl);
+                } else {
+                  addDebugInfo('⚠️ Edge OK pero no se ubicó shape para aplicar metadata', { url: pastedUrl });
                 }
               }
             } catch (err) {

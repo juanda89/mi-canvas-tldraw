@@ -185,6 +185,147 @@ export default function Canvas({ session }) {
     return null;
   }, []);
 
+  // -------------------
+  // Inspector manual de shapes
+  // -------------------
+  const [inspector, setInspector] = useState({
+    open: false,
+    shapeId: null,
+    type: null,
+    url: '',
+    assetId: null,
+    asset: { title: '', description: '', image: '', favicon: '' },
+  });
+
+  // Track selección actual periódicamente
+  useEffect(() => {
+    const t = setInterval(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const id = editor.getOnlySelectedShapeId();
+      if (!id) {
+        if (inspector.open) setInspector((p) => ({ ...p, open: false, shapeId: null }));
+        return;
+      }
+      const shape = editor.getShape(id);
+      if (!shape) return;
+      if (shape.type === 'bookmark') {
+        const assetId = shape.props.assetId;
+        const asset = assetId ? editor.getAsset(assetId) : null;
+        const next = {
+          open: true,
+          shapeId: id,
+          type: shape.type,
+          url: shape.props.url || '',
+          assetId: assetId || null,
+          asset: {
+            title: asset?.props?.title || '',
+            description: asset?.props?.description || '',
+            image: asset?.props?.image || '',
+            favicon: asset?.props?.favicon || '',
+          },
+        };
+        setInspector((p) => (JSON.stringify(p) !== JSON.stringify(next) ? next : p));
+      } else {
+        setInspector({ open: true, shapeId: id, type: shape.type, url: '', assetId: null, asset: { title: '', description: '', image: '', favicon: '' } });
+      }
+    }, 250);
+    return () => clearInterval(t);
+  }, [inspector.open]);
+
+  const inspectorApplyUrl = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor || !inspector.shapeId) return;
+    const shape = editor.getShape(inspector.shapeId);
+    if (!shape || shape.type !== 'bookmark') return;
+    editor.run(() => {
+      editor.updateShapes([{ id: shape.id, type: 'bookmark', props: { url: inspector.url } }]);
+    });
+    pushOverlayEvent('🔗 URL aplicada al bookmark');
+  }, [inspector.shapeId, inspector.url, pushOverlayEvent]);
+
+  const inspectorApplyAsset = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor || !inspector.shapeId) return;
+    const shape = editor.getShape(inspector.shapeId);
+    if (!shape || shape.type !== 'bookmark') return;
+    // asegurar asset
+    let assetId = shape.props.assetId;
+    let asset = assetId ? editor.getAsset(assetId) : null;
+    if (!asset) {
+      // crear asset a partir de la url actual
+      const url = inspector.url || shape.props.url || '';
+      try {
+        const created = await editor.getAssetForExternalContent({ type: 'url', url });
+        if (created) {
+          editor.run(() => {
+            editor.createAssets([created]);
+            editor.updateShapes([{ id: shape.id, type: 'bookmark', props: { assetId: created.id } }]);
+          });
+          assetId = created.id;
+          asset = created;
+        }
+      } catch (e) {
+        addDebugInfo('❌ No se pudo crear asset desde URL', e);
+      }
+    }
+    if (!assetId) return;
+    // actualizar props del asset
+    const updated = {
+      ...editor.getAsset(assetId),
+      props: {
+        ...editor.getAsset(assetId)?.props,
+        title: inspector.asset.title,
+        description: inspector.asset.description,
+        image: inspector.asset.image,
+        favicon: inspector.asset.favicon,
+      }
+    };
+    editor.run(() => {
+      editor.updateAssets([updated]);
+    });
+    pushOverlayEvent('🖼️ Asset actualizado');
+  }, [inspector, addDebugInfo, pushOverlayEvent]);
+
+  const inspectorFitHeight = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor || !inspector.shapeId) return;
+    const shape = editor.getShape(inspector.shapeId);
+    if (!shape || shape.type !== 'bookmark') return;
+    const imgUrl = inspector.asset.image;
+    if (!imgUrl) return;
+    try {
+      const dim = await new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight });
+        im.onerror = () => resolve(null);
+        im.src = imgUrl;
+      });
+      if (!dim) return;
+      const targetW = shape.props.w || 300;
+      const imageH = Math.max(60, Math.round((targetW * dim.h) / dim.w));
+      const extra = (inspector.asset.title || inspector.asset.description) ? 100 : 60;
+      const targetH = imageH + extra;
+      editor.run(() => {
+        editor.updateShapes([{ id: shape.id, type: 'bookmark', props: { w: targetW, h: targetH } }]);
+      });
+      pushOverlayEvent(`📐 Altura ajustada a ratio (${targetH}px)`);
+    } catch (e) {
+      addDebugInfo('⚠️ Ajuste de altura falló', e);
+    }
+  }, [inspector, addDebugInfo, pushOverlayEvent]);
+
+  const inspectorSetLoading = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor || !inspector.shapeId) return;
+    const shape = editor.getShape(inspector.shapeId);
+    if (!shape || shape.type !== 'bookmark') return;
+    const ok = await waitForAssetOnShape(editor, shape.id, 20, 80);
+    if (!ok) return;
+    setBookmarkLoading(editor, shape.id);
+    pushOverlayEvent('⏳ Placeholder de loading aplicado');
+  }, [inspector.shapeId, waitForAssetOnShape, setBookmarkLoading, pushOverlayEvent]);
+
   // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
   const extractUserData = useCallback((snapshot) => {
     const userShapes = {};
@@ -425,13 +566,8 @@ export default function Canvas({ session }) {
             if (selShape?.type === 'bookmark') shapeId = selShape.id;
           }
 
-          // Colocar placeholder de loading mientras llega la metadata real
-          if (shapeId) {
-            try {
-              const ok = await waitForAssetOnShape(editor, shapeId, 40, 60);
-              if (ok) setBookmarkLoading(editor, shapeId);
-            } catch {/* ignore */}
-          } else {
+          // (Desactivado) Placeholder automático. Usaremos editor manual.
+          if (!shapeId) {
             addDebugInfo('⚠️ No se pudo localizar bookmark para URL', { url: pastedUrl });
           }
 
@@ -463,12 +599,8 @@ export default function Canvas({ session }) {
               } else {
                 addDebugInfo('✅ Edge Function respuesta', data);
                 pushOverlayEvent('✅ Edge Function OK');
-                // Actualizar bookmark con thumbnail + meta y ajustar tamaño
-                if (shapeId) {
-                  // asegurarnos que el asset exista
-                  await waitForAssetOnShape(editor, shapeId, 40, 60);
-                  applyBookmarkMetadata(editor, shapeId, data, pastedUrl);
-                } else {
+                // Dejamos la aplicación de metadata a través del editor manual
+                if (!shapeId) {
                   addDebugInfo('⚠️ Edge OK pero no se ubicó shape para aplicar metadata', { url: pastedUrl });
                 }
               }
@@ -730,6 +862,84 @@ export default function Canvas({ session }) {
           </div>
         ))}
       </div>
+
+      {/* Inspector de Shape (manual) */}
+      {inspector.open && (
+        <div style={{
+          position: 'absolute',
+          right: '10px',
+          bottom: '10px',
+          width: '360px',
+          backgroundColor: 'rgba(17,24,39,0.96)',
+          color: 'white',
+          padding: '10px',
+          borderRadius: '8px',
+          fontSize: '12px',
+          zIndex: 1101,
+          fontFamily: 'monospace',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <strong>🔧 Inspector</strong>
+            <span style={{ opacity: 0.7 }}>id: {inspector.shapeId} • {inspector.type}</span>
+          </div>
+
+          {inspector.type === 'bookmark' ? (
+            <div>
+              <div style={{ marginBottom: 6 }}>
+                <div>URL</div>
+                <input
+                  value={inspector.url}
+                  onChange={(e) => setInspector((p) => ({ ...p, url: e.target.value }))}
+                  style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
+                />
+                <button onClick={inspectorApplyUrl} style={{ marginTop: 6, padding: '4px 8px', background: '#2563eb', border: '1px solid #1d4ed8', borderRadius: 4 }}>Aplicar URL</button>
+              </div>
+
+              <div style={{ marginBottom: 6 }}>
+                <div>Título</div>
+                <input
+                  value={inspector.asset.title}
+                  onChange={(e) => setInspector((p) => ({ ...p, asset: { ...p.asset, title: e.target.value } }))}
+                  style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
+                />
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <div>Descripción</div>
+                <textarea
+                  value={inspector.asset.description}
+                  onChange={(e) => setInspector((p) => ({ ...p, asset: { ...p.asset, description: e.target.value } }))}
+                  rows={3}
+                  style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151', resize: 'vertical' }}
+                />
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <div>Thumbnail URL</div>
+                <input
+                  value={inspector.asset.image}
+                  onChange={(e) => setInspector((p) => ({ ...p, asset: { ...p.asset, image: e.target.value } }))}
+                  style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
+                />
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <div>Favicon URL</div>
+                <input
+                  value={inspector.asset.favicon}
+                  onChange={(e) => setInspector((p) => ({ ...p, asset: { ...p.asset, favicon: e.target.value } }))}
+                  style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                <button onClick={inspectorApplyAsset} style={{ padding: '6px 10px', background: '#059669', border: '1px solid #047857', borderRadius: 4 }}>Aplicar Asset</button>
+                <button onClick={inspectorFitHeight} style={{ padding: '6px 10px', background: '#6b7280', border: '1px solid #4b5563', borderRadius: 4 }}>Ajustar altura</button>
+                <button onClick={inspectorSetLoading} style={{ padding: '6px 10px', background: '#f59e0b', border: '1px solid #d97706', borderRadius: 4 }}>Set Loading</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ opacity: 0.8 }}>Aún no soportado para tipo: {inspector.type}</div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

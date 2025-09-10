@@ -1,4 +1,5 @@
 import { Tldraw, DefaultMainMenu, TldrawUiMenuItem, createTLStore } from '@tldraw/tldraw'
+import { createShapeId, toRichText } from '@tldraw/tlschema'
 import '@tldraw/tldraw/tldraw.css'
 import { supabase } from './supabaseClient'
 import { useState, useRef, useCallback, useEffect } from 'react'
@@ -252,15 +253,66 @@ export default function Canvas({ session }) {
         return;
       }
       pushOverlayEvent(`📤 Script "${tone}" → Edge`);
+
+      // Crear shape de texto (geo rectangle) a la derecha con placeholder
+      const b = editor.getShapePageBounds?.(shapeId);
+      if (!b) return;
+      const textW = 420;
+      const gap = 220; // espacio a la derecha del bookmark (incluye botones)
+      const x = (b.maxX ?? (b.x + b.w)) + gap;
+      const y = b.minY ?? b.y;
+      const textH = (b.h ?? b.height ?? b.w) || 300;
+      const scriptShapeId = createShapeId();
+      editor.createShapes([
+        {
+          id: scriptShapeId,
+          type: 'geo',
+          x,
+          y,
+          props: {
+            geo: 'rectangle',
+            w: textW,
+            h: textH,
+            growY: 0,
+            scale: 1,
+            richText: toRichText('Loading...'),
+          },
+        },
+      ]);
       const { data, error } = await supabase.functions.invoke('script-action', {
         body: { url, script: tone },
       });
       if (error) {
         addDebugInfo('❌ script-action error', error);
         pushOverlayEvent('❌ script-action falló');
+        // Mostrar error en el shape creado
+        try {
+          editor.updateShapes([
+            {
+              id: scriptShapeId,
+              type: 'geo',
+              props: { richText: toRichText('❌ Error solicitando el script. Revisa debug.') },
+            },
+          ]);
+        } catch {/* ignore */}
         return;
       }
       addDebugInfo('✅ script-action OK', data);
+      // Colocar el script en el shape
+      try {
+        const scriptText = (data && (data.script || data.text || data.content || data.result))
+          ? (data.script || data.text || data.content || data.result)
+          : JSON.stringify(data, null, 2);
+        editor.updateShapes([
+          {
+            id: scriptShapeId,
+            type: 'geo',
+            props: { richText: toRichText(String(scriptText)) },
+          },
+        ]);
+      } catch (e) {
+        addDebugInfo('⚠️ No se pudo volcar el script en el shape', e);
+      }
       pushOverlayEvent('✅ Script solicitado');
     } catch (e) {
       addDebugInfo('❌ script-action excepción', e);

@@ -27,6 +27,7 @@ export default function Canvas({ session }) {
   const [loading, setLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState([]);
   const [isReady, setIsReady] = useState(false);
+  const [overlayEvents, setOverlayEvents] = useState([]);
   const saveTimeout = useRef(null);
   const editorRef = useRef(null);
   
@@ -54,6 +55,19 @@ export default function Canvas({ session }) {
     
     console.log(`🐛 [${timestamp}] ${message}`, data || '');
     setDebugInfo(prev => [...prev.slice(-20), debugEntry]);
+  }, []);
+
+  // Ventana flotante: helper para eventos breves (pegado / edge)
+  const pushOverlayEvent = useCallback((text) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setOverlayEvents((prev) => {
+      const next = [...prev, { id, text, time: new Date().toLocaleTimeString() }];
+      return next.slice(-8); // mantener últimos 8
+    });
+    // Auto remover en 8s
+    setTimeout(() => {
+      setOverlayEvents((prev) => prev.filter((e) => e.id !== id));
+    }, 8000);
   }, []);
 
   // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
@@ -201,6 +215,31 @@ export default function Canvas({ session }) {
     };
   }, [isReady, store, session.user.id, addDebugInfo, extractUserData]);
 
+  // Listener global de paste (solo debug visual, no altera comportamiento)
+  useEffect(() => {
+    const onPaste = (e) => {
+      try {
+        const txt = e.clipboardData?.getData('text/uri-list') || e.clipboardData?.getData('text/plain') || '';
+        if (txt) {
+          const urls = txt.split(/[\n\s]+/).filter(Boolean).filter((u) => {
+            try { const uu = new URL(u); return /^https?:$/.test(uu.protocol); } catch { return false; }
+          });
+          if (urls.length) {
+            pushOverlayEvent(`📥 Evento Paste detectado (${urls.length})`);
+          } else {
+            pushOverlayEvent('📥 Evento Paste (texto)');
+          }
+        } else {
+          pushOverlayEvent('📥 Evento Paste');
+        }
+      } catch {
+        pushOverlayEvent('📥 Evento Paste');
+      }
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [pushOverlayEvent]);
+
   // Función de carga - solo shapes y assets
   const loadUserData = useCallback(async () => {
     try {
@@ -251,22 +290,67 @@ export default function Canvas({ session }) {
           const pastedUrl = externalContent?.url;
           if (pastedUrl) {
             addDebugInfo('📎 URL detectada en canvas', { url: pastedUrl });
+            pushOverlayEvent(`📥 Pegar URL: ${pastedUrl}`);
+          }
+
+          // Guardar shapes actuales para detectar el nuevo shape creado por tldraw
+          const beforeIds = new Set(editor.getCurrentPageShapes().map((s) => s.id));
+
+          // Mantener el comportamiento por defecto de tldraw primero
+          if (typeof originalUrlHandler === 'function') {
+            await originalUrlHandler(externalContent);
+          }
+
+          let shapeId = null;
+          try {
+            // Esperar al siguiente frame para asegurar creación
+            await new Promise((r) => requestAnimationFrame(() => r()));
+            const afterShapes = editor.getCurrentPageShapes();
+            const newShapes = afterShapes.filter((s) => !beforeIds.has(s.id));
+            const bookmark = newShapes.find((s) => s.type === 'bookmark') || afterShapes.find((s) => s.type === 'bookmark' && s.props?.url === pastedUrl);
+            if (bookmark) {
+              shapeId = bookmark.id;
+            } else {
+              // fallback: usar selección actual si coincide
+              const sel = editor.getSelectedShapeIds()[0];
+              const selShape = sel ? editor.getShape(sel) : null;
+              if (selShape?.type === 'bookmark') shapeId = selShape.id;
+            }
+          } catch (_) {}
+
+          // Invocar Edge Function con los 3 parámetros requeridos
+          if (pastedUrl) {
+            const platform = (() => {
+              try {
+                const host = new URL(pastedUrl).hostname.replace(/^www\./, '');
+                if (/^(x\.com|twitter\.com|t\.co)$/i.test(host)) return 'twitter';
+                if (/^(instagram\.com)$/i.test(host)) return 'instagram';
+                if (/^(tiktok\.com)$/i.test(host)) return 'tiktok';
+                if (/^(youtube\.com|youtu\.be)$/i.test(host)) return 'youtube';
+                if (/^(facebook\.com)$/i.test(host)) return 'facebook';
+                if (/^(linkedin\.com)$/i.test(host)) return 'linkedin';
+                return host;
+              } catch {
+                return 'unknown';
+              }
+            })();
+
+            pushOverlayEvent(`🚀 Llamando Edge: platform=${platform} shapeId=${shapeId ?? 'N/A'}`);
             try {
               const { data, error } = await supabase.functions.invoke('process-social-url', {
-                body: { url: pastedUrl },
+                body: { url: pastedUrl, shapeId, platform },
               });
               if (error) {
                 addDebugInfo('❌ Edge Function error', error);
+                pushOverlayEvent('❌ Edge Function error (ver panel debug)');
               } else {
                 addDebugInfo('✅ Edge Function respuesta', data);
+                pushOverlayEvent('✅ Edge Function OK');
               }
             } catch (err) {
               addDebugInfo('❌ Edge Function fallo', err);
+              pushOverlayEvent('❌ Edge Function fallo (excepción)');
             }
-          }
-          // Mantener el comportamiento por defecto de tldraw
-          if (typeof originalUrlHandler === 'function') {
-            return originalUrlHandler(externalContent);
           }
         });
         addDebugInfo('🔗 Handler de URL registrado');
@@ -484,6 +568,33 @@ export default function Canvas({ session }) {
           </div>
         </div>
       )}
+
+      {/* Ventana flotante inferior-izquierda (debug rápido de paste/edge) */}
+      <div style={{
+        position: 'absolute',
+        left: '10px',
+        bottom: '10px',
+        width: '360px',
+        backgroundColor: 'rgba(0,0,0,0.9)',
+        color: 'white',
+        padding: '6px 8px',
+        borderRadius: '6px',
+        fontSize: '11px',
+        zIndex: 1100,
+        pointerEvents: 'none',
+        maxHeight: '180px',
+        overflow: 'auto',
+        fontFamily: 'monospace',
+      }}>
+        <div style={{ fontWeight: 'bold', marginBottom: '4px', color: '#93c5fd' }}>
+          📎 Paste / Edge Debug ({overlayEvents.length})
+        </div>
+        {overlayEvents.map((e) => (
+          <div key={e.id} style={{ marginBottom: '2px', color: '#e5e7eb' }}>
+            [{e.time}] {e.text}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

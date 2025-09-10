@@ -196,6 +196,9 @@ export default function Canvas({ session }) {
     assetId: null,
     asset: { title: '', description: '', image: '', favicon: '' },
   });
+  const [isEditingInspector, setIsEditingInspector] = useState(false);
+  const edgeDataRef = useRef({});
+  const [edgeDataVersion, setEdgeDataVersion] = useState(0);
 
   // Track selección actual periódicamente
   useEffect(() => {
@@ -225,13 +228,17 @@ export default function Canvas({ session }) {
             favicon: asset?.props?.favicon || '',
           },
         };
-        setInspector((p) => (JSON.stringify(p) !== JSON.stringify(next) ? next : p));
+        if (!isEditingInspector) {
+          setInspector((p) => (JSON.stringify(p) !== JSON.stringify(next) ? next : p));
+        }
       } else {
-        setInspector({ open: true, shapeId: id, type: shape.type, url: '', assetId: null, asset: { title: '', description: '', image: '', favicon: '' } });
+        if (!isEditingInspector) {
+          setInspector({ open: true, shapeId: id, type: shape.type, url: '', assetId: null, asset: { title: '', description: '', image: '', favicon: '' } });
+        }
       }
     }, 250);
     return () => clearInterval(t);
-  }, [inspector.open]);
+  }, [inspector.open, isEditingInspector, edgeDataVersion]);
 
   const inspectorApplyUrl = useCallback(async () => {
     const editor = editorRef.current;
@@ -599,6 +606,13 @@ export default function Canvas({ session }) {
               } else {
                 addDebugInfo('✅ Edge Function respuesta', data);
                 pushOverlayEvent('✅ Edge Function OK');
+                // Guardar datos recibidos para usarlos desde el Inspector
+                try {
+                  if (shapeId) edgeDataRef.current[`shape:${shapeId}`] = data;
+                  if (pastedUrl) edgeDataRef.current[`url:${pastedUrl}`] = data;
+                  setEdgeDataVersion((v) => v + 1);
+                  addDebugInfo('💾 Edge data guardado para inspector', { shapeId, pastedUrl });
+                } catch {/* ignore */}
                 // Dejamos la aplicación de metadata a través del editor manual
                 if (!shapeId) {
                   addDebugInfo('⚠️ Edge OK pero no se ubicó shape para aplicar metadata', { url: pastedUrl });
@@ -877,6 +891,7 @@ export default function Canvas({ session }) {
           fontSize: '12px',
           zIndex: 1101,
           fontFamily: 'monospace',
+          pointerEvents: 'auto',
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <strong>🔧 Inspector</strong>
@@ -889,6 +904,8 @@ export default function Canvas({ session }) {
                 <div>URL</div>
                 <input
                   value={inspector.url}
+                  onFocus={() => setIsEditingInspector(true)}
+                  onBlur={() => setTimeout(() => setIsEditingInspector(false), 120)}
                   onChange={(e) => setInspector((p) => ({ ...p, url: e.target.value }))}
                   style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
                 />
@@ -899,6 +916,8 @@ export default function Canvas({ session }) {
                 <div>Título</div>
                 <input
                   value={inspector.asset.title}
+                  onFocus={() => setIsEditingInspector(true)}
+                  onBlur={() => setTimeout(() => setIsEditingInspector(false), 120)}
                   onChange={(e) => setInspector((p) => ({ ...p, asset: { ...p.asset, title: e.target.value } }))}
                   style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
                 />
@@ -907,6 +926,8 @@ export default function Canvas({ session }) {
                 <div>Descripción</div>
                 <textarea
                   value={inspector.asset.description}
+                  onFocus={() => setIsEditingInspector(true)}
+                  onBlur={() => setTimeout(() => setIsEditingInspector(false), 120)}
                   onChange={(e) => setInspector((p) => ({ ...p, asset: { ...p.asset, description: e.target.value } }))}
                   rows={3}
                   style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151', resize: 'vertical' }}
@@ -916,6 +937,8 @@ export default function Canvas({ session }) {
                 <div>Thumbnail URL</div>
                 <input
                   value={inspector.asset.image}
+                  onFocus={() => setIsEditingInspector(true)}
+                  onBlur={() => setTimeout(() => setIsEditingInspector(false), 120)}
                   onChange={(e) => setInspector((p) => ({ ...p, asset: { ...p.asset, image: e.target.value } }))}
                   style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
                 />
@@ -924,6 +947,8 @@ export default function Canvas({ session }) {
                 <div>Favicon URL</div>
                 <input
                   value={inspector.asset.favicon}
+                  onFocus={() => setIsEditingInspector(true)}
+                  onBlur={() => setTimeout(() => setIsEditingInspector(false), 120)}
                   onChange={(e) => setInspector((p) => ({ ...p, asset: { ...p.asset, favicon: e.target.value } }))}
                   style={{ width: '100%', padding: '6px', borderRadius: 4, background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
                 />
@@ -933,6 +958,32 @@ export default function Canvas({ session }) {
                 <button onClick={inspectorApplyAsset} style={{ padding: '6px 10px', background: '#059669', border: '1px solid #047857', borderRadius: 4 }}>Aplicar Asset</button>
                 <button onClick={inspectorFitHeight} style={{ padding: '6px 10px', background: '#6b7280', border: '1px solid #4b5563', borderRadius: 4 }}>Ajustar altura</button>
                 <button onClick={inspectorSetLoading} style={{ padding: '6px 10px', background: '#f59e0b', border: '1px solid #d97706', borderRadius: 4 }}>Set Loading</button>
+                {(() => {
+                  const edgeData = edgeDataRef.current[`shape:${inspector.shapeId}`] || edgeDataRef.current[`url:${inspector.url}`];
+                  if (!edgeData) return null;
+                  const thumb = edgeData.thumbnailUrl || edgeData.thumbnail_url || edgeData.image || edgeData.image_url;
+                  const title = edgeData.title || edgeData.meta?.title;
+                  const desc = edgeData.description || edgeData.meta?.description;
+                  return (
+                    <button
+                      onClick={() => {
+                        setInspector((p) => ({
+                          ...p,
+                          asset: {
+                            ...p.asset,
+                            image: thumb || p.asset.image,
+                            title: title ?? p.asset.title,
+                            description: desc ?? p.asset.description,
+                          },
+                        }));
+                        pushOverlayEvent('⬇️ Cargado desde Edge en el inspector');
+                      }}
+                      style={{ padding: '6px 10px', background: '#3b82f6', border: '1px solid #2563eb', borderRadius: 4 }}
+                    >
+                      Cargar desde Edge
+                    </button>
+                  );
+                })()}
               </div>
             </div>
           ) : (

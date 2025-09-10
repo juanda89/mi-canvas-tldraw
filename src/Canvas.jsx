@@ -96,23 +96,39 @@ export default function Canvas({ session }) {
     const title = data?.title || data?.meta?.title || asset.props.title || '';
     const description = data?.description || data?.meta?.description || asset.props.description || '';
     const favicon = data?.favicon || data?.meta?.favicon || asset.props.favicon || '';
-    const image = data?.thumbnailUrl || data?.thumbnail_url || data?.image || data?.image_url || asset.props.image || '';
+    const rawImage = data?.thumbnailUrl || data?.thumbnail_url || data?.image || data?.image_url || asset.props.image || '';
     const imgW = Number(data?.width || data?.w) || null;
     const imgH = Number(data?.height || data?.h) || null;
 
-    // Actualizar asset
-    editor.updateAssets([
-      {
-        ...asset,
-        props: {
-          ...asset.props,
-          title,
-          description,
-          favicon,
-          image,
-        }
-      }
-    ]);
+    const testLoad = (url) => new Promise((resolve) => {
+      if (!url) return resolve({ ok: false, url });
+      try {
+        const im = new Image();
+        let done = false;
+        const timer = setTimeout(() => { if (!done) { done = true; resolve({ ok: false, url }); } }, 2500);
+        im.onload = () => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: true, url }); } };
+        im.onerror = () => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: false, url }); } };
+        im.referrerPolicy = 'no-referrer';
+        im.src = url;
+      } catch { resolve({ ok: false, url }); }
+    });
+
+    const makeProxy = (url) => `https://images.weserv.nl/?url=${encodeURIComponent(url)}&w=640&h=640&fit=contain`;
+
+    const applyAsset = async () => {
+      const primary = await testLoad(rawImage);
+      const finalImage = primary.ok ? primary.url : makeProxy(rawImage);
+      editor.run(() => {
+        editor.updateAssets([
+          { ...asset, props: { ...asset.props, title, description, favicon, image: finalImage } }
+        ]);
+      });
+      // Forzar re-render suave
+      editor.updateInstanceState({ isChangingStyle: true });
+      editor.timers.setTimeout(() => editor.updateInstanceState({ isChangingStyle: false }), 120);
+      return finalImage;
+    };
+    applyAsset();
 
     // Ajustar tamaño segun ratio (si lo sabemos)
     const fitToImage = (naturalW, naturalH) => {
@@ -134,7 +150,7 @@ export default function Canvas({ session }) {
       try {
         const img = new Image();
         img.onload = () => fitToImage(img.naturalWidth, img.naturalHeight);
-        img.src = image;
+        img.src = rawImage;
       } catch {/* ignore */}
     }
   }, [addDebugInfo]);
@@ -277,6 +293,23 @@ export default function Canvas({ session }) {
       }
     }
     if (!assetId) return;
+    // resolver imagen (prueba directa y con proxy)
+    const testLoad = (url) => new Promise((resolve) => {
+      if (!url) return resolve({ ok: false, url });
+      try {
+        const im = new Image();
+        let done = false;
+        const timer = setTimeout(() => { if (!done) { done = true; resolve({ ok: false, url }); } }, 2500);
+        im.onload = () => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: true, url }); } };
+        im.onerror = () => { if (!done) { done = true; clearTimeout(timer); resolve({ ok: false, url }); } };
+        im.referrerPolicy = 'no-referrer';
+        im.src = url;
+      } catch { resolve({ ok: false, url }); }
+    });
+    const proxy = (url) => `https://images.weserv.nl/?url=${encodeURIComponent(url)}&w=640&h=640&fit=contain`;
+    const primary = await testLoad(inspector.asset.image);
+    const finalImage = primary.ok ? primary.url : proxy(inspector.asset.image);
+
     // actualizar props del asset
     const updated = {
       ...editor.getAsset(assetId),
@@ -284,13 +317,16 @@ export default function Canvas({ session }) {
         ...editor.getAsset(assetId)?.props,
         title: inspector.asset.title,
         description: inspector.asset.description,
-        image: inspector.asset.image,
+        image: finalImage,
         favicon: inspector.asset.favicon,
       }
     };
     editor.run(() => {
       editor.updateAssets([updated]);
     });
+    // Forzar re-render suave
+    editor.updateInstanceState({ isChangingStyle: true });
+    editor.timers.setTimeout(() => editor.updateInstanceState({ isChangingStyle: false }), 120);
     pushOverlayEvent('🖼️ Asset actualizado');
   }, [inspector, addDebugInfo, pushOverlayEvent]);
 
@@ -613,8 +649,15 @@ export default function Canvas({ session }) {
                   setEdgeDataVersion((v) => v + 1);
                   addDebugInfo('💾 Edge data guardado para inspector', { shapeId, pastedUrl });
                 } catch {/* ignore */}
-                // Dejamos la aplicación de metadata a través del editor manual
-                if (!shapeId) {
+                // Aplicar automáticamente metadata del Edge a bookmark
+                if (shapeId) {
+                  try {
+                    await waitForAssetOnShape(editor, shapeId, 40, 60);
+                    applyBookmarkMetadata(editor, shapeId, data, pastedUrl);
+                  } catch (e) {
+                    addDebugInfo('⚠️ No se pudo aplicar metadata automáticamente', e);
+                  }
+                } else {
                   addDebugInfo('⚠️ Edge OK pero no se ubicó shape para aplicar metadata', { url: pastedUrl });
                 }
               }

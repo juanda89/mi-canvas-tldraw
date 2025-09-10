@@ -85,16 +85,15 @@ export default function Canvas({ session }) {
   );
 
   // Aplica un thumbnail/metadata al asset del bookmark y ajusta tamaño
-  const ensureJpg = (urlString) => {
-    try {
-      const u = new URL(urlString);
-      if (!u.pathname.toLowerCase().endsWith('.jpg')) {
-        u.pathname = u.pathname + '.jpg';
-      }
-      return u.toString();
-    } catch {
-      return urlString.toLowerCase().endsWith('.jpg') ? urlString : urlString + '.jpg';
-    }
+  // Nota: No forzamos extensiones. Aceptamos la URL tal cual para evitar 404.
+  const normalizeImageUrl = (urlString) => {
+    if (!urlString) return '';
+    // data URLs o blobs se devuelven tal cual
+    if (/^(data:|blob:)/i.test(urlString)) return urlString;
+    // Si es una URL válida, regresarla sin modificar
+    try { new URL(urlString); return urlString; } catch { /* ignore */ }
+    // En caso de strings relativos o no-URL, también los devolvemos tal cual
+    return urlString;
   };
 
   const refreshBookmarkShape = useCallback((editor, shapeId) => {
@@ -122,7 +121,7 @@ export default function Canvas({ session }) {
     const description = data?.description || data?.meta?.description || asset.props.description || '';
     const favicon = data?.favicon || data?.meta?.favicon || asset.props.favicon || '';
     const rawImage = data?.thumbnail || data?.thumbnailUrl || data?.thumbnail_url || data?.image || data?.image_url || asset.props.image || '';
-    const finalImage = rawImage ? ensureJpg(rawImage) : rawImage;
+    const finalImage = normalizeImageUrl(rawImage);
 
     editor.run(() => {
       editor.updateAssets([
@@ -152,7 +151,13 @@ export default function Canvas({ session }) {
     } else if (finalImage) {
       try {
         const img = new Image();
-        img.onload = () => fitToImage(img.naturalWidth, img.naturalHeight);
+        img.onload = () => {
+          addDebugInfo('🖼️ Imagen cargada para ajuste', { w: img.naturalWidth, h: img.naturalHeight, src: finalImage });
+          fitToImage(img.naturalWidth, img.naturalHeight);
+        };
+        img.onerror = (e) => {
+          addDebugInfo('⚠️ Error cargando imagen (no ajusta tamaño)', { src: finalImage, error: e?.message || String(e) });
+        };
         img.src = finalImage;
       } catch {/* ignore */}
     }
@@ -297,7 +302,7 @@ export default function Canvas({ session }) {
     }
     if (!assetId) return;
     // resolver imagen (prueba directa y con proxy)
-    const finalImage = ensureJpg(inspector.asset.image || '');
+    const finalImage = normalizeImageUrl(inspector.asset.image || '');
 
     // actualizar props del asset
     const updated = {

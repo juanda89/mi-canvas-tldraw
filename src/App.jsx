@@ -85,44 +85,92 @@ function App() {
   return (
     <div style={styles.appContainer}>
       {!session ? (
-        <div style={styles.authContainer}>
-          <div style={styles.authBox}>
-            <h1 style={styles.authTitle}>Bienvenido al Whiteboard</h1>
-            <p style={styles.authSubtitle}>Inicia sesión para comenzar</p>
-            <Auth
-              supabaseClient={supabase}
-              appearance={{ 
-                theme: ThemeSupa,
-                style: {
-                  button: { 
-                    background: '#3b82f6', 
-                    color: 'white',
-                    borderRadius: '8px'
+        <div style={styles.authLayout}>
+          <div style={styles.leftPanel}>
+            <div style={styles.brandBadge}>
+              <span style={styles.brandDot} />
+              <span>mi-canvas</span>
+            </div>
+            <h1 style={styles.headline}>Crea, comparte y colabora.</h1>
+            <p style={styles.tagline}>Un lienzo colaborativo, simple y potente.</p>
+            <div style={styles.leftDecor} />
+          </div>
+          <div style={styles.rightPanel}>
+            <div style={styles.authCard}>
+              <h2 style={styles.cardTitle}>Bienvenido</h2>
+              <p style={styles.cardSubtitle}>Inicia sesión para continuar</p>
+              <Auth
+                supabaseClient={supabase}
+                appearance={{
+                  theme: ThemeSupa,
+                  variables: {
+                    default: {
+                      colors: {
+                        brand: '#22c55e',
+                        brandAccent: '#16a34a',
+                        inputBackground: '#0b1220',
+                        inputBorder: '#25324a',
+                        inputText: '#e5e7eb',
+                        inputLabelText: '#9aa4b2',
+                        messageText: '#9aa4b2',
+                        defaultButtonBackground: '#22c55e',
+                        defaultButtonText: '#0b1220',
+                      },
+                      radii: {
+                        borderRadiusButton: '10px',
+                        inputBorderRadius: '10px',
+                      },
+                      fonts: {
+                        bodyFontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+                        buttonFontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+                      },
+                      space: {
+                        inputPadding: '12px',
+                        buttonPadding: '12px 16px',
+                      },
+                    },
                   },
-                  input: { 
-                    borderRadius: '8px' 
-                  }
-                }
-              }}
-              theme="dark"
-              providers={['google']}
-              localization={{
-                variables: {
-                  sign_in: {
-                    email_label: 'Correo electrónico',
-                    password_label: 'Contraseña',
-                    button_label: 'Iniciar sesión',
-                    loading_button_label: 'Iniciando sesión...',
+                  style: {
+                    container: { width: '100%' },
+                    button: {
+                      background: 'linear-gradient(180deg, #22c55e, #16a34a)',
+                      color: '#081018',
+                      border: '1px solid rgba(34,197,94,0.6)',
+                      borderRadius: '10px',
+                      fontWeight: 600,
+                    },
+                    input: {
+                      background: 'rgba(8,16,24,0.7)',
+                      border: '1px solid #25324a',
+                      color: '#e5e7eb',
+                      borderRadius: '10px',
+                    },
+                    anchor: { color: '#22c55e' },
+                    label: { color: '#9aa4b2' },
+                    message: { color: '#9aa4b2' },
                   },
-                  sign_up: {
-                    email_label: 'Correo electrónico',
-                    password_label: 'Contraseña',
-                    button_label: 'Registrarse',
-                    loading_button_label: 'Registrándose...',
-                  }
-                }
-              }}
-            />
+                }}
+                theme="dark"
+                providers={['google']}
+                localization={{
+                  variables: {
+                    sign_in: {
+                      email_label: 'Correo electrónico',
+                      password_label: 'Contraseña',
+                      button_label: 'Iniciar sesión',
+                      loading_button_label: 'Iniciando sesión...',
+                    },
+                    sign_up: {
+                      email_label: 'Correo electrónico',
+                      password_label: 'Contraseña',
+                      button_label: 'Registrarse',
+                      loading_button_label: 'Registrándose...',
+                    },
+                  },
+                }}
+              />
+              <p style={styles.cardFooter}>Protegido por Supabase Auth</p>
+            </div>
           </div>
         </div>
       ) : (
@@ -142,37 +190,117 @@ const styles = {
     overflow: 'hidden'
   },
   
-  authContainer: {
+  authLayout: {
     width: '100%',
     height: '100%',
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+    background: 'radial-gradient(1200px 500px at 10% -10%, rgba(34,197,94,0.25), transparent 50%), radial-gradient(1000px 600px at 110% 110%, rgba(34,197,94,0.15), transparent 50%), linear-gradient(180deg, #0b1220, #0b1220)',
+    position: 'relative',
+    overflow: 'hidden'
+  },
+
+  leftPanel: {
+    position: 'relative',
     display: 'flex',
+    flexDirection: 'column',
     justifyContent: 'center',
+    padding: '3.5rem',
+    color: '#e5e7eb',
+    backgroundImage: 'radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)',
+    backgroundSize: '24px 24px',
+    borderRight: '1px solid rgba(148,163,184,0.08)'
+  },
+
+  rightPanel: {
+    display: 'flex',
     alignItems: 'center',
-    background: 'linear-gradient(135deg, #1e293b 0%, #334155 100%)',
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-  },
-  
-  authBox: {
-    background: '#1e293b',
+    justifyContent: 'center',
     padding: '2rem',
-    borderRadius: '12px',
-    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
-    border: '1px solid #334155',
-    minWidth: '400px',
-    textAlign: 'center'
   },
-  
-  authTitle: {
-    color: '#f1f5f9',
-    fontSize: '2rem',
-    fontWeight: '700',
-    margin: '0 0 0.5rem 0'
+
+  brandBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '10px',
+    background: 'rgba(34,197,94,0.12)',
+    color: '#86efac',
+    border: '1px solid rgba(34,197,94,0.25)',
+    padding: '6px 12px',
+    borderRadius: '9999px',
+    width: 'fit-content',
+    fontSize: '0.9rem',
+    fontWeight: 600,
+    letterSpacing: '0.2px',
+    marginBottom: '1.25rem'
   },
-  
-  authSubtitle: {
-    color: '#94a3b8',
-    fontSize: '1rem',
-    margin: '0 0 2rem 0'
+
+  brandDot: {
+    display: 'inline-block',
+    width: '8px',
+    height: '8px',
+    borderRadius: '9999px',
+    background: 'linear-gradient(180deg, #22c55e, #16a34a)',
+    boxShadow: '0 0 0 3px rgba(34,197,94,0.15)'
+  },
+
+  headline: {
+    fontSize: '3rem',
+    lineHeight: 1.1,
+    margin: 0,
+    fontWeight: 800,
+    letterSpacing: '-0.02em',
+    color: '#f8fafc'
+  },
+
+  tagline: {
+    marginTop: '0.75rem',
+    color: '#93a3b8',
+    fontSize: '1.1rem'
+  },
+
+  leftDecor: {
+    position: 'absolute',
+    bottom: '-60px',
+    left: '-60px',
+    width: '220px',
+    height: '220px',
+    background: 'conic-gradient(from 180deg at 50% 50%, rgba(34,197,94,0.4), transparent 60%)',
+    filter: 'blur(40px)',
+    opacity: 0.7,
+    pointerEvents: 'none'
+  },
+
+  authCard: {
+    width: '420px',
+    background: 'rgba(15, 23, 42, 0.65)',
+    border: '1px solid rgba(148,163,184,0.12)',
+    boxShadow: '0 10px 40px rgba(0,0,0,0.35)',
+    backdropFilter: 'blur(8px)',
+    borderRadius: '16px',
+    padding: '28px',
+  },
+
+  cardTitle: {
+    color: '#f8fafc',
+    fontSize: '1.5rem',
+    fontWeight: 700,
+    margin: '0 0 0.25rem 0',
+    letterSpacing: '-0.01em'
+  },
+
+  cardSubtitle: {
+    color: '#93a3b8',
+    fontSize: '0.95rem',
+    margin: '0 0 1rem 0'
+  },
+
+  cardFooter: {
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: '0.75rem',
+    fontSize: '0.85rem'
   },
   
   loadingContainer: {

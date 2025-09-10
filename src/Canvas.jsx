@@ -70,100 +70,93 @@ export default function Canvas({ session }) {
     }, 8000);
   }, []);
 
-  // Convierte un bookmark en un video shape usando datos de la Edge Function
-  const convertBookmarkToVideo = useCallback((editor, params) => {
-    try {
-      const { shapeId, pastedUrl, payload } = params;
-      const bookmark = editor.getShape(shapeId);
-      if (!bookmark || bookmark.type !== 'bookmark') {
-        addDebugInfo('⚠️ No es bookmark o no existe shape para convertir', { shapeId });
-        return;
-      }
+  // Placeholder inline SVG para loading en el bookmark
+  const LOADING_SVG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270" viewBox="0 0 480 270">
+      <defs>
+        <style>@keyframes s{to{transform:rotate(360deg)}}</style>
+      </defs>
+      <rect width="100%" height="100%" fill="#0f172a"/>
+      <g transform="translate(240,135)">
+        <circle r="28" fill="none" stroke="#93c5fd" stroke-width="6" stroke-dasharray="132" stroke-linecap="round" style="transform-origin:center;animation:s 1.1s linear infinite"/>
+      </g>
+      <text x="50%" y="70%" fill="#e5e7eb" font-size="16" font-family="monospace" text-anchor="middle">Loading thumbnail…</text>
+    </svg>`
+  );
 
-      const videoUrl = payload?.videoUrl || payload?.video_url || payload?.url || payload?.mediaUrl || payload?.media_url;
-      const thumbnailUrl = payload?.thumbnailUrl || payload?.thumbnail_url || payload?.image || payload?.image_url || payload?.thumbnail;
-      const title = payload?.title || payload?.meta?.title || '';
-      const description = payload?.description || payload?.meta?.description || '';
-      const w = Number(payload?.width || payload?.w) || 480;
-      const h = Number(payload?.height || payload?.h) || 270;
+  // Aplica un thumbnail/metadata al asset del bookmark y ajusta tamaño
+  const applyBookmarkMetadata = useCallback((editor, shapeId, data, pastedUrl) => {
+    const shape = editor.getShape(shapeId);
+    if (!shape || shape.type !== 'bookmark') return;
+    const assetId = shape.props.assetId;
+    if (!assetId) return;
+    const asset = editor.getAsset(assetId);
+    if (!asset) return;
 
-      if (!videoUrl) {
-        addDebugInfo('ℹ️ Edge sin videoUrl - se mantiene bookmark', { payload });
-        return;
-      }
+    const title = data?.title || data?.meta?.title || asset.props.title || '';
+    const description = data?.description || data?.meta?.description || asset.props.description || '';
+    const favicon = data?.favicon || data?.meta?.favicon || asset.props.favicon || '';
+    const image = data?.thumbnailUrl || data?.thumbnail_url || data?.image || data?.image_url || asset.props.image || '';
+    const imgW = Number(data?.width || data?.w) || null;
+    const imgH = Number(data?.height || data?.h) || null;
 
-      const x = bookmark.x;
-      const y = bookmark.y;
-      const opacity = bookmark.opacity ?? 1;
-
-      // Si no es un formato reproducible directo, intentar EMBED
-      const isDirectPlayable = /\.(mp4|webm|ogg)(\?|#|$)/i.test(videoUrl);
-      if (!isDirectPlayable) {
-        try {
-          const embedUtil = editor.getShapeUtil('embed');
-          const embedInfo = embedUtil?.getEmbedDefinition(pastedUrl);
-          if (embedInfo) {
-            editor.run(() => {
-              editor.deleteShapes([shapeId]);
-              editor.createShape({
-                id: shapeId,
-                type: 'embed',
-                x, y, opacity,
-                props: {
-                  w: embedInfo.definition.width || w,
-                  h: embedInfo.definition.height || h,
-                  url: embedInfo.url,
-                }
-              });
-              editor.select(shapeId);
-            });
-            addDebugInfo('🧩 Convertido a EMBED shape', { shapeId, url: embedInfo.url, title });
-            pushOverlayEvent('🧩 Bookmark convertido a EMBED');
-            return;
-          }
-        } catch (e) {
-          addDebugInfo('⚠️ Fallback EMBED falló, intento VIDEO directo', e);
-        }
-      }
-
-      // Crear asset de video y shape VIDEO
-      const assetId = `asset:vid-${(globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2))}`;
-      const asset = {
-        id: assetId,
-        typeName: 'asset',
-        type: 'video',
+    // Actualizar asset
+    editor.updateAssets([
+      {
+        ...asset,
         props: {
-          name: title || 'video',
-          src: videoUrl,
-          w, h,
-          fileSize: 0,
-          mimeType: 'video/mp4',
-          isAnimated: false,
-        },
-        meta: {
+          ...asset.props,
           title,
           description,
-          thumbnail: thumbnailUrl,
-          sourceUrl: pastedUrl,
+          favicon,
+          image,
         }
-      };
+      }
+    ]);
 
-      editor.run(() => {
-        editor.createAssets([asset]);
-        editor.deleteShapes([shapeId]);
-        editor.createShapes([
-          { id: shapeId, type: 'video', x, y, opacity, props: { assetId, w, h } }
-        ]);
-        editor.select(shapeId);
-      });
+    // Ajustar tamaño segun ratio (si lo sabemos)
+    const fitToImage = (naturalW, naturalH) => {
+      if (!naturalW || !naturalH) return;
+      const current = editor.getShape(shapeId);
+      const targetW = current?.props?.w || 300;
+      const imageH = Math.max(60, Math.round((targetW * naturalH) / naturalW));
+      const extra = title || description ? 100 : 60; // espacio para texto
+      const targetH = imageH + extra;
+      editor.updateShapes([
+        { id: shapeId, type: 'bookmark', props: { w: targetW, h: targetH } }
+      ]);
+      addDebugInfo('🖼️ Ajustado bookmark al ratio', { targetW, targetH, naturalW, naturalH });
+    };
 
-      addDebugInfo('🎬 Convertido a VIDEO shape', { shapeId, assetId, title });
-      pushOverlayEvent('🎬 Bookmark convertido a VIDEO');
-    } catch (err) {
-      addDebugInfo('❌ Error convirtiendo bookmark a video', err);
-      pushOverlayEvent('❌ Error al convertir a VIDEO');
+    if (imgW && imgH) {
+      fitToImage(imgW, imgH);
+    } else if (image) {
+      try {
+        const img = new Image();
+        img.onload = () => fitToImage(img.naturalWidth, img.naturalHeight);
+        img.src = image;
+      } catch {/* ignore */}
     }
-  }, [addDebugInfo, pushOverlayEvent]);
+  }, [addDebugInfo]);
+
+  // Coloca un placeholder de carga si el asset no tiene imagen aún
+  const setBookmarkLoading = useCallback((editor, shapeId) => {
+    const shape = editor.getShape(shapeId);
+    if (!shape || shape.type !== 'bookmark') return;
+    const assetId = shape.props.assetId;
+    if (!assetId) return;
+    const asset = editor.getAsset(assetId);
+    if (!asset) return;
+    if (asset.props.image) return; // ya tiene imagen
+    editor.updateAssets([
+      { ...asset, props: { ...asset.props, image: LOADING_SVG, title: asset.props.title || '', description: asset.props.description || '' } }
+    ]);
+    // Altura de carga por defecto
+    const current = editor.getShape(shapeId);
+    const targetW = current?.props?.w || 300;
+    const targetH = 180 + 80;
+    editor.updateShapes([{ id: shapeId, type: 'bookmark', props: { w: targetW, h: targetH } }]);
+  }, [LOADING_SVG]);
 
   // ✅ NUEVO: Extraer solo contenido del usuario (shapes y assets)
   const extractUserData = useCallback((snapshot) => {
@@ -413,6 +406,11 @@ export default function Canvas({ session }) {
             }
           } catch (_) {}
 
+          // Colocar placeholder de loading mientras llega la metadata real
+          if (shapeId) {
+            try { setBookmarkLoading(editor, shapeId); } catch {/* ignore */}
+          }
+
           // Invocar Edge Function con los 3 parámetros requeridos
           if (pastedUrl) {
             const platform = (() => {
@@ -441,8 +439,10 @@ export default function Canvas({ session }) {
               } else {
                 addDebugInfo('✅ Edge Function respuesta', data);
                 pushOverlayEvent('✅ Edge Function OK');
-                // Intentar convertir a video shape si hay datos suficientes
-                convertBookmarkToVideo(editor, { shapeId, pastedUrl, payload: data });
+                // Actualizar bookmark con thumbnail + meta y ajustar tamaño
+                if (shapeId) {
+                  applyBookmarkMetadata(editor, shapeId, data, pastedUrl);
+                }
               }
             } catch (err) {
               addDebugInfo('❌ Edge Function fallo', err);
